@@ -202,6 +202,7 @@ Object.defineProperty(exports, "__esModule", ({
 // @ts-nocheck
 /* eslint-disable */
 const HostChannel_1 = __importDefault(__webpack_require__(/*! ../bind/HostChannel */ "./client/bind/HostChannel.ts"));
+const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const FluxLiveState_1 = __importDefault(__webpack_require__(/*! ./FluxLiveState */ "./client/cms-live-updates/FluxLiveState.ts"));
 const API_ENDPOINT = "/flux/api";
 function sendTemplateUpdate(hostChannel, fluxState) {
@@ -209,11 +210,19 @@ function sendTemplateUpdate(hostChannel, fluxState) {
     if (!response.trusted) {
       console.warn("Source HTML returned unsafe html");
     }
-    // Broadcast the HTML to the iframe for live updates
+    // Log partial update support
+    if (response.hasPartialSupport) {
+      logger_1.logger.log(`Flux: Partial updates enabled. ${response.blockCount} blocks changed.`);
+    }
+    // Broadcast the full response to the iframe for live updates
+    // Includes both full HTML and selective patches
     hostChannel.broadcastMessage({
       type: 'templateUpdate',
       html: response.html,
-      changedFields: response.changedFields
+      changedFields: response.changedFields,
+      patches: response.patches,
+      hasPartialSupport: response.hasPartialSupport,
+      blockCount: response.blockCount
     });
     return response;
   }).catch(error => {

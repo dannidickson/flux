@@ -75,6 +75,7 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../bind/FrameChannel */ "./client/bind/FrameChannel.ts"));
+// @ts-ignore - idiomorph doesn't have TypeScript definitions
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
 // Signal to parent that frame is ready to recieve messages
 if (window.parent !== window) {
@@ -105,7 +106,68 @@ const addBindingToElement = field => {
   element?.setAttribute(`fx-type`, field.type);
 };
 /**
+ * Apply partial patches by finding HTML comment markers and morphing content
+ *
+ * @param patches - Map of block IDs to patch data
+ * @returns number of patches applied
+ */
+const applyPartialPatches = patches => {
+  let appliedCount = 0;
+  for (const [blockId, patch] of Object.entries(patches)) {
+    // Find the comment markers in the current DOM
+    const commentStart = findCommentNode(document.body, `FLUX_START:${blockId}:`);
+    const commentEnd = findCommentNode(document.body, `FLUX_END:${blockId}`);
+    if (!commentStart || !commentEnd) {
+      console.warn(`Flux: Could not find comment markers for ${blockId}`);
+      continue;
+    }
+    const deps = patch.dependencies ? patch.dependencies.join(', ') : 'none';
+    console.log(`Flux: Applying patch to ${blockId} (type: ${patch.type}, deps: ${deps})`);
+    // Get all nodes between the comment markers
+    const nodesToReplace = [];
+    let currentNode = commentStart.nextSibling;
+    while (currentNode && currentNode !== commentEnd) {
+      nodesToReplace.push(currentNode);
+      currentNode = currentNode.nextSibling;
+    }
+    // Create a temporary container with the new HTML
+    const tempContainer = document.createElement('div');
+    tempContainer.innerHTML = patch.html;
+    // Replace old nodes with new ones
+    const fragment = document.createDocumentFragment();
+    while (tempContainer.firstChild) {
+      fragment.appendChild(tempContainer.firstChild);
+    }
+    // Remove old nodes
+    nodesToReplace.forEach(node => {
+      if (node.parentNode) {
+        node.parentNode.removeChild(node);
+      }
+    });
+    // Insert new nodes after start comment
+    commentStart.parentNode?.insertBefore(fragment, commentEnd);
+    appliedCount++;
+  }
+  return appliedCount;
+};
+/**
+ * Find a comment node by its text content
+ */
+const findCommentNode = (root, searchText) => {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT, null);
+  let node;
+  while (node = walker.nextNode()) {
+    if (node.nodeType === Node.COMMENT_NODE && node.nodeValue?.includes(searchText)) {
+      return node;
+    }
+  }
+  return null;
+};
+/**
  * Applies the returned HTML to the document
+ *
+ * Supports both partial patching (when hasPartialSupport is true) and
+ * full document morphing (fallback).
  *
  * @TODO
  *  move this into the `core/index`
@@ -122,8 +184,18 @@ const updateElement = fluxBroadCastMessage => {
       console.error('templateUpdate received but no HTML provided');
       return;
     }
-    console.log('Morphing document with new HTML...');
-    console.time('morph');
+    // Try partial patching first if supported
+    if (fluxBroadCastMessage.hasPartialSupport && fluxBroadCastMessage.patches && fluxBroadCastMessage.blockCount && fluxBroadCastMessage.blockCount > 0) {
+      console.log(`Flux: Applying ${fluxBroadCastMessage.blockCount} partial patches...`);
+      console.time('partial-patch');
+      const appliedCount = applyPartialPatches(fluxBroadCastMessage.patches);
+      console.log(`Flux: Successfully applied ${appliedCount}/${fluxBroadCastMessage.blockCount} patches`);
+      console.timeEnd('partial-patch');
+      return;
+    }
+    // Fallback to full document morphing
+    console.log('Flux: Morphing entire document (no partial support)...');
+    console.time('full-morph');
     // Parse the HTML to remove doctype and extract just the <html> element
     const parser = new DOMParser();
     const newDoc = parser.parseFromString(fluxBroadCastMessage.html, 'text/html');
@@ -143,7 +215,7 @@ const updateElement = fluxBroadCastMessage => {
       }
     });
     console.log('Document morphed successfully');
-    console.timeEnd('morph');
+    console.timeEnd('full-morph');
     return;
   }
   // Handle individual field updates (textUpdate)
@@ -153,8 +225,10 @@ const updateElement = fluxBroadCastMessage => {
       console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
       return;
     }
-    element.innerHTML = fluxBroadCastMessage.value;
-    console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
+    if (fluxBroadCastMessage.value !== undefined) {
+      element.innerHTML = fluxBroadCastMessage.value;
+      console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
+    }
     return;
   }
   console.warn('Unknown message type or missing data:', fluxBroadCastMessage);

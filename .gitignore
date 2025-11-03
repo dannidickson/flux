@@ -6,3 +6,4 @@ composer.lock
 *.css.map
 yarn-error.log
 public/
+.phpunit.result.cache
