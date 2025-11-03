@@ -1,3 +1,7 @@
 SilverStripe\Admin\LeftAndMain:
   extensions:
     - Flux\Extension\FluxLeftAndMainExtension
+
+SilverStripe\CMS\Controllers\ContentController:
+  extensions:
+    - Flux\Extension\FluxPreviewExtension

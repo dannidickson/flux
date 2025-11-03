@@ -2,17 +2,15 @@
 
 namespace Flux\API;
 
+use Flux\Service\FluxTemplateService;
 use Flux\Service\PartialTemplateRenderer;
-use Flux\TemplateEngine\FluxTemplateParser;
 use SilverStripe\CMS\Controllers\ContentController;
 use SilverStripe\CMS\Model\SiteTree;
 use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Core\Injector\Injector;
-use SilverStripe\Dev\Debug;
 use SilverStripe\ORM\DataObject;
-use SilverStripe\TemplateEngine\SSTemplateEngine;
 
 class APIController extends Controller
 {
@@ -175,24 +173,9 @@ class APIController extends Controller
      */
     private function renderWithFluxParser(ContentController $controller): string
     {
-        // We need to flush the template cache
-        SSTemplateEngine::flushTemplateCache();
-
-        $action = $controller->getAction();
-        $viewer = $controller->getViewer($action);
-
-        $engine = $viewer->getTemplateEngine();
-        $fluxParser = new FluxTemplateParser();
-        $engine->setParser($fluxParser);
-
-        $html = $viewer->process($controller);
-
-        $hasMarkers = strpos($html, '<!-- FLUX_START:') !== false;
-        if (!$hasMarkers) {
-            Debug::dump('WARNING: No FLUX markers found in rendered HTML!');
-        }
-
-        return (string)$html;
+        /** @var FluxTemplateService $fluxService */
+        $fluxService = FluxTemplateService::singleton();
+        return $fluxService->renderWithFluxParser($controller);
     }
 
 }

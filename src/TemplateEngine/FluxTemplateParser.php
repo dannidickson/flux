@@ -28,6 +28,12 @@ class FluxTemplateParser extends SSTemplateParser
     protected $dependencyMap = [];
 
     /**
+     * Temporary storage for dependencies of the current If block being processed
+     * @var array
+     */
+    protected $currentIfDependencies = [];
+
+    /**
      * Reset the block counter (useful for testing)
      */
     public static function resetBlockCounter(): void
@@ -80,17 +86,67 @@ class FluxTemplateParser extends SSTemplateParser
     }
 
     /**
-     * Override If_IfPart to wrap content inside the if branch
+     * Override If_IfPart to collect dependencies from the if branch
      */
     public function If_IfPart(&$res, $sub)
     {
-        $conditionDeps = $this->extractDependenciesFromIfArgument($sub['IfArgument'] ?? []);
+        parent::If_IfPart($res, $sub);
 
-        $templatePhp = isset($sub['Template']) ? $sub['Template']['php'] : '';
+        $this->currentIfDependencies = [];
 
-        $contentDeps = $this->extractFieldsFromPhp($templatePhp);
+        if (isset($sub['IfArgument'])) {
+            $conditionDeps = $this->extractDependenciesFromIfArgument($sub['IfArgument']);
+            $this->currentIfDependencies = array_merge($this->currentIfDependencies, $conditionDeps);
+        }
 
-        $dependencies = array_unique(array_merge($conditionDeps, $contentDeps));
+        if (isset($sub['Template']['php'])) {
+            $contentDeps = $this->extractFieldsFromPhp($sub['Template']['php']);
+            $this->currentIfDependencies = array_merge($this->currentIfDependencies, $contentDeps);
+        }
+    }
+
+    /**
+     * Override If_ElseIfPart to collect dependencies from elseif branches
+     */
+    public function If_ElseIfPart(&$res, $sub)
+    {
+        parent::If_ElseIfPart($res, $sub);
+
+        if (isset($sub['IfArgument'])) {
+            $conditionDeps = $this->extractDependenciesFromIfArgument($sub['IfArgument']);
+            $this->currentIfDependencies = array_merge($this->currentIfDependencies, $conditionDeps);
+        }
+
+        if (isset($sub['Template']['php'])) {
+            $contentDeps = $this->extractFieldsFromPhp($sub['Template']['php']);
+            $this->currentIfDependencies = array_merge($this->currentIfDependencies, $contentDeps);
+        }
+    }
+
+    /**
+     * Override If_ElsePart to collect dependencies from else branch
+     */
+    public function If_ElsePart(&$res, $sub)
+    {
+        parent::If_ElsePart($res, $sub);
+
+        if (isset($sub['Template']['php'])) {
+            $contentDeps = $this->extractFieldsFromPhp($sub['Template']['php']);
+            $this->currentIfDependencies = array_merge($this->currentIfDependencies, $contentDeps);
+        }
+    }
+
+    /**
+     * Finalise the If block after all parts (if/elseif/else) have been assembled
+     *
+     * This wraps the ENTIRE if/elseif/else structure with markers that are ALWAYS rendered,
+     * even when all conditions are false. This allows the frontend to know where to patch content.
+     */
+    public function If__finalise(&$res)
+    {
+        $ifPhp = $res['php'];
+
+        $dependencies = array_unique($this->currentIfDependencies);
 
         $blockId = 'flux-block-' . (++self::$blockCounter);
 
@@ -99,64 +155,27 @@ class FluxTemplateParser extends SSTemplateParser
             'dependencies' => $dependencies,
         ];
 
-        $wrappedContent = $this->wrapWithMarker($templatePhp, $blockId, 'if', $dependencies);
+        $primaryField = !empty($dependencies) ? $dependencies[0] : '';
 
-        $res['php'] =
-            'if (' . $sub['IfArgument']['php'] . ') { ' . PHP_EOL .
-                $wrappedContent . PHP_EOL .
-            '}';
-    }
 
-    /**
-     * Override If_ElseIfPart to wrap content inside the elseif branch
-     */
-    public function If_ElseIfPart(&$res, $sub)
-    {
-        $conditionDeps = $this->extractDependenciesFromIfArgument($sub['IfArgument'] ?? []);
+        // Wrap the entire if structure, that way they are not part of the conditional logic
+        // So they are in the CMS previrw
+        $startMarker = sprintf(
+            "\$val .= '<!-- FLUX_START::%s:%s -->';",
+            'if',
+            $primaryField
+        );
 
-        $templatePhp = isset($sub['Template']) ? $sub['Template']['php'] : '';
+        $endMarker = sprintf(
+            "\$val .= '<!-- FLUX_END::%s:%s -->';",
+            'if',
+            $primaryField
+        );
 
-        $contentDeps = $this->extractFieldsFromPhp($templatePhp);
+        $res['php'] = $startMarker . PHP_EOL . $ifPhp . PHP_EOL . $endMarker;
 
-        $dependencies = array_unique(array_merge($conditionDeps, $contentDeps));
-
-        $blockId = 'flux-block-' . (++self::$blockCounter);
-
-        $this->dependencyMap[$blockId] = [
-            'type' => 'elseif',
-            'dependencies' => $dependencies,
-        ];
-
-        $wrappedContent = $this->wrapWithMarker($templatePhp, $blockId, 'elseif', $dependencies);
-
-        $res['php'] .=
-            'else if (' . $sub['IfArgument']['php'] . ') { ' . PHP_EOL .
-                $wrappedContent . PHP_EOL .
-            '}';
-    }
-
-    /**
-     * Override If_ElsePart to wrap content inside the else branch
-     */
-    public function If_ElsePart(&$res, $sub)
-    {
-        $templatePhp = isset($sub['Template']) ? $sub['Template']['php'] : '';
-
-        $dependencies = $this->extractFieldsFromPhp($templatePhp);
-
-        $blockId = 'flux-block-' . (++self::$blockCounter);
-
-        $this->dependencyMap[$blockId] = [
-            'type' => 'else',
-            'dependencies' => $dependencies,
-        ];
-
-        $wrappedContent = $this->wrapWithMarker($templatePhp, $blockId, 'else', $dependencies);
-
-        $res['php'] .=
-            'else { ' . PHP_EOL .
-                $wrappedContent . PHP_EOL .
-            '}';
+        // Tidy up the if block deps
+        $this->currentIfDependencies = [];
     }
 
     /**
