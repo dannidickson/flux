@@ -4,6 +4,13 @@ interface FluxFieldBind {
     type: string;
 }
 
+interface FluxPatch {
+    id: string;
+    type: string;
+    html: string;
+    dependencies: string[];
+}
+
 interface FluxBroadCastMessage {
     type: string;
     html?: string;
@@ -12,6 +19,11 @@ interface FluxBroadCastMessage {
     value?: string;
     changedFields?: Record<string, any>;
     targetKey?: string;
+
+    // Partial Template, maybe it should be patchs.support / patches.count
+    patches?: Record<string, FluxPatch>;
+    hasPartialSupport?: boolean;
+    blockCount?: number;
 }
 
 

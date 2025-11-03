@@ -13,11 +13,17 @@ function sendTemplateUpdate(hostChannel: any, fluxState: FluxLiveState) {
                 console.warn("Source HTML returned unsafe html");
             }
 
-            // Broadcast the HTML to the iframe for live updates
+            if (response.hasPartialSupport) {
+                logger.log(`Flux: Partial updates enabled. ${response.blockCount} blocks changed.`);
+            }
+
             hostChannel.broadcastMessage({
                 type: 'templateUpdate',
                 html: response.html,
-                changedFields: response.changedFields
+                changedFields: response.changedFields,
+                patches: response.patches,
+                hasPartialSupport: response.hasPartialSupport,
+                blockCount: response.blockCount
             });
 
             return response;
