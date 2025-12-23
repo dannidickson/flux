@@ -26,6 +26,12 @@ class FrameChannel {
     window.addEventListener("message", this.messageHandler);
     // Set the default handler or use the one passed in
     this.onRecievedMessage = onRecievedMessage || this.defaultMessageHandler.bind(this);
+    // Signal to parent that frame is ready (handles both initial load and reloads)
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        type: 'FRAME_READY'
+      }, window.location.origin);
+    }
   }
   setupMessageEvents(event) {
     if (event.origin !== window.location.origin) {
@@ -41,8 +47,6 @@ class FrameChannel {
       this.channel = event.ports[0];
       this.channel.onmessage = event => this.onRecievedMessage(event);
       this.channel.start();
-      // remove the original message listener
-      window.removeEventListener("message", this.messageHandler);
     }
   }
   /**
@@ -75,19 +79,21 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../bind/FrameChannel */ "./client/bind/FrameChannel.ts"));
+// @ts-ignore
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
-// Signal to parent that frame is ready to recieve messages
-if (window.parent !== window) {
-  window.parent.postMessage({
-    type: 'FRAME_READY'
-  }, window.location.origin);
-}
 const frame = new FrameChannel_1.default();
 frame.onRecievedMessage = event => {
   updateElement(event.data);
 };
 window.addEventListener('DOMContentLoaded', () => {
   if (!window.FluxConfig) return;
+  addElementBindings();
+});
+/**
+ * Adds the Config bindings to each element
+ * @returns
+ */
+const addElementBindings = () => {
   const {
     Fields
   } = window.FluxConfig;
@@ -95,7 +101,7 @@ window.addEventListener('DOMContentLoaded', () => {
   for (const [key, value] of Object.entries(Fields)) {
     addBindingToElement(value);
   }
-});
+};
 const addBindingToElement = field => {
   const element = document.querySelector(field.bind);
   if (!element) {
@@ -144,6 +150,7 @@ const updateElement = fluxBroadCastMessage => {
     });
     console.log('Document morphed successfully');
     console.timeEnd('morph');
+    addElementBindings();
     return;
   }
   // Handle individual field updates (textUpdate)
@@ -153,6 +160,7 @@ const updateElement = fluxBroadCastMessage => {
       console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
       return;
     }
+    // @ts-ignore
     element.innerHTML = fluxBroadCastMessage.value;
     console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
     return;
@@ -175,23 +183,29 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.logger = void 0;
+/**
+ * Logger will only output for development env only
+ */
 class Logger {
   constructor(env) {
-    this.env = env;
-  }
-  log(...args) {
-    if (this.env === 'development') {
-      console.log(...args);
-    }
-  }
-  warn(...args) {
-    if (this.env === 'development') {
-      console.warn(...args);
-    }
-  }
-  error(...args) {
-    if (this.env === 'development') {
-      console.error(...args);
+    if (env === 'development') {
+      // Bind console methods directly to preserve call stack location
+      this.log = console.log.bind(console);
+      this.warn = console.warn.bind(console);
+      this.error = console.error.bind(console);
+      this.table = console.table.bind(console);
+      this.time = console.time.bind(console);
+      this.timeEnd = console.timeEnd.bind(console);
+      this.timeLog = console.timeLog.bind(console);
+    } else {
+      // No-op functions for non-development
+      this.log = () => {};
+      this.warn = () => {};
+      this.error = () => {};
+      this.table = () => {};
+      this.time = () => {};
+      this.timeEnd = () => {};
+      this.timeLog = () => {};
     }
   }
 }

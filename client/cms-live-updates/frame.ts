@@ -1,4 +1,5 @@
 import FrameChannel from "../bind/FrameChannel";
+// @ts-ignore
 import Idiomorph from "idiomorph";
 
 // Declare Idiomorph global type
@@ -10,11 +11,6 @@ declare global {
     }
 }
 
-// Signal to parent that frame is ready to recieve messages
-if (window.parent !== window) {
-    window.parent.postMessage({ type: 'FRAME_READY' }, window.location.origin);
-}
-
 const frame = new FrameChannel();
 
 frame.onRecievedMessage = (event) => {
@@ -24,6 +20,14 @@ frame.onRecievedMessage = (event) => {
 window.addEventListener('DOMContentLoaded', () => {
     if (!window.FluxConfig) return;
 
+    addElementBindings();
+});
+
+/**
+ * Adds the Config bindings to each element
+ * @returns
+ */
+const addElementBindings = () => {
     const { Fields } = window.FluxConfig;
 
     if (Object.keys(Fields).length === 0) return;
@@ -31,7 +35,7 @@ window.addEventListener('DOMContentLoaded', () => {
     for (const [key, value] of Object.entries(Fields)) {
         addBindingToElement(value);
     }
-});
+}
 
 const addBindingToElement = (field: any) => {
     const element = document.querySelector(field.bind);
@@ -89,6 +93,8 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
 
         console.log('Document morphed successfully');
         console.timeEnd('morph');
+
+        addElementBindings();
         return;
     }
 
@@ -101,6 +107,7 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
             return;
         }
 
+        // @ts-ignore
         element.innerHTML = fluxBroadCastMessage.value;
         console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
         return;

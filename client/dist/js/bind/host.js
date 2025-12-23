@@ -14,23 +14,29 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.logger = void 0;
+/**
+ * Logger will only output for development env only
+ */
 class Logger {
   constructor(env) {
-    this.env = env;
-  }
-  log(...args) {
-    if (this.env === 'development') {
-      console.log(...args);
-    }
-  }
-  warn(...args) {
-    if (this.env === 'development') {
-      console.warn(...args);
-    }
-  }
-  error(...args) {
-    if (this.env === 'development') {
-      console.error(...args);
+    if (env === 'development') {
+      // Bind console methods directly to preserve call stack location
+      this.log = console.log.bind(console);
+      this.warn = console.warn.bind(console);
+      this.error = console.error.bind(console);
+      this.table = console.table.bind(console);
+      this.time = console.time.bind(console);
+      this.timeEnd = console.timeEnd.bind(console);
+      this.timeLog = console.timeLog.bind(console);
+    } else {
+      // No-op functions for non-development
+      this.log = () => {};
+      this.warn = () => {};
+      this.error = () => {};
+      this.table = () => {};
+      this.time = () => {};
+      this.timeEnd = () => {};
+      this.timeLog = () => {};
     }
   }
 }
@@ -86,19 +92,32 @@ class HostChannel {
     if (this.frame === null) {
       throw new Error(`iFrame cannot be found using ${frameElement}`);
     }
-    this.channelInstance = new MessageChannel();
-    this.channelInstance.port1.onmessage = event => this.recieveMessageFromFrame(event);
-    this.channelInstance.port1.onmessageerror = event => {};
-    this.channelInstance.port1.start();
-    // Listen for FRAME_READY signal from iframe
-    const readyHandler = event => {
-      if (event.data.type === 'FRAME_READY') {
+    this.createChannel();
+    // Listen for FRAME_READY signal from iframe (including reloads)
+    this.readyHandler = event => {
+      if (event.data.type === 'FRAME_READY' && event.origin === window.location.origin) {
         logger_1.logger.log("Frame ready - establishing channel");
-        window.removeEventListener('message', readyHandler);
-        this.sendPortToFrame();
+        this.recreateChannel();
       }
     };
-    window.addEventListener('message', readyHandler);
+    window.addEventListener('message', this.readyHandler);
+  }
+  createChannel() {
+    this.channelInstance = new MessageChannel();
+    this.channelInstance.port1.onmessage = event => this.recieveMessageFromFrame(event);
+    this.channelInstance.port1.onmessageerror = event => this.recieveMessageError(event);
+    this.channelInstance.port1.start();
+  }
+  recreateChannel() {
+    logger_1.logger.log("Recreating MessageChannel for iframe reload");
+    // Close old channel
+    if (this.channelInstance) {
+      this.channelInstance.port1.close();
+    }
+    // Create new channel
+    this.createChannel();
+    // Send new port to iframe
+    this.sendPortToFrame();
   }
   sendPortToFrame() {
     const message = {
@@ -113,6 +132,13 @@ class HostChannel {
   }
   broadcastMessage(broadcastMessage) {
     this.channelInstance.port1.postMessage(broadcastMessage);
+  }
+  destroy() {
+    logger_1.logger.log("Destroying HostChannel");
+    window.removeEventListener('message', this.readyHandler);
+    if (this.channelInstance) {
+      this.channelInstance.port1.close();
+    }
   }
 }
 exports["default"] = HostChannel;

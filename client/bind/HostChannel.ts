@@ -2,8 +2,9 @@ import { logger } from "../core/logger";
 
 export default class HostChannel {
     channelType: string;
-    channelInstance: MessageChannel;
+    channelInstance!: MessageChannel;
     frame: Element | null;
+    private readyHandler: (event: MessageEvent) => void;
 
 
     constructor(url: string, frameElement: string) {
@@ -15,23 +16,42 @@ export default class HostChannel {
             throw new Error(`iFrame cannot be found using ${frameElement}`);
         }
 
+        this.createChannel();
+
+        // Listen for FRAME_READY signal from iframe (including reloads)
+        this.readyHandler = (event: MessageEvent) => {
+            if (event.data.type === 'FRAME_READY' && event.origin === window.location.origin) {
+                logger.log("Frame ready - establishing channel");
+                this.recreateChannel();
+            }
+        };
+        window.addEventListener('message', this.readyHandler);
+    }
+
+    private createChannel() {
         this.channelInstance = new MessageChannel();
 
         this.channelInstance.port1.onmessage = (event: MessageEvent) =>
             this.recieveMessageFromFrame(event);
-        this.channelInstance.port1.onmessageerror = (event: Event) => { };
+        this.channelInstance.port1.onmessageerror = (event: Event) =>
+            this.recieveMessageError(event);
 
         this.channelInstance.port1.start();
+    }
 
-        // Listen for FRAME_READY signal from iframe
-        const readyHandler = (event: MessageEvent) => {
-            if (event.data.type === 'FRAME_READY') {
-                logger.log("Frame ready - establishing channel");
-                window.removeEventListener('message', readyHandler);
-                this.sendPortToFrame();
-            }
-        };
-        window.addEventListener('message', readyHandler);
+    private recreateChannel() {
+        logger.log("Recreating MessageChannel for iframe reload");
+
+        // Close old channel
+        if (this.channelInstance) {
+            this.channelInstance.port1.close();
+        }
+
+        // Create new channel
+        this.createChannel();
+
+        // Send new port to iframe
+        this.sendPortToFrame();
     }
 
     sendPortToFrame() {
@@ -55,5 +75,13 @@ export default class HostChannel {
 
     broadcastMessage(broadcastMessage: any) {
         this.channelInstance.port1.postMessage(broadcastMessage);
+    }
+
+    destroy() {
+        logger.log("Destroying HostChannel");
+        window.removeEventListener('message', this.readyHandler);
+        if (this.channelInstance) {
+            this.channelInstance.port1.close();
+        }
     }
 }

@@ -16,6 +16,11 @@ export default class FrameChannel {
 
         // Set the default handler or use the one passed in
         this.onRecievedMessage = onRecievedMessage || this.defaultMessageHandler.bind(this);
+
+        // Signal to parent that frame is ready (handles both initial load and reloads)
+        if (window.parent !== window) {
+            window.parent.postMessage({ type: 'FRAME_READY' }, window.location.origin);
+        }
     }
 
     setupMessageEvents(event: MessageEvent) {
@@ -35,9 +40,6 @@ export default class FrameChannel {
             this.channel = event.ports[0];
             this.channel.onmessage = (event: MessageEvent) => this.onRecievedMessage(event);
             this.channel.start();
-
-            // remove the original message listener
-            window.removeEventListener("message", this.messageHandler);
         }
     }
 

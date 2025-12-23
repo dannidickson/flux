@@ -21,19 +21,32 @@ class HostChannel {
     if (this.frame === null) {
       throw new Error(`iFrame cannot be found using ${frameElement}`);
     }
-    this.channelInstance = new MessageChannel();
-    this.channelInstance.port1.onmessage = event => this.recieveMessageFromFrame(event);
-    this.channelInstance.port1.onmessageerror = event => {};
-    this.channelInstance.port1.start();
-    // Listen for FRAME_READY signal from iframe
-    const readyHandler = event => {
-      if (event.data.type === 'FRAME_READY') {
+    this.createChannel();
+    // Listen for FRAME_READY signal from iframe (including reloads)
+    this.readyHandler = event => {
+      if (event.data.type === 'FRAME_READY' && event.origin === window.location.origin) {
         logger_1.logger.log("Frame ready - establishing channel");
-        window.removeEventListener('message', readyHandler);
-        this.sendPortToFrame();
+        this.recreateChannel();
       }
     };
-    window.addEventListener('message', readyHandler);
+    window.addEventListener('message', this.readyHandler);
+  }
+  createChannel() {
+    this.channelInstance = new MessageChannel();
+    this.channelInstance.port1.onmessage = event => this.recieveMessageFromFrame(event);
+    this.channelInstance.port1.onmessageerror = event => this.recieveMessageError(event);
+    this.channelInstance.port1.start();
+  }
+  recreateChannel() {
+    logger_1.logger.log("Recreating MessageChannel for iframe reload");
+    // Close old channel
+    if (this.channelInstance) {
+      this.channelInstance.port1.close();
+    }
+    // Create new channel
+    this.createChannel();
+    // Send new port to iframe
+    this.sendPortToFrame();
   }
   sendPortToFrame() {
     const message = {
@@ -48,6 +61,13 @@ class HostChannel {
   }
   broadcastMessage(broadcastMessage) {
     this.channelInstance.port1.postMessage(broadcastMessage);
+  }
+  destroy() {
+    logger_1.logger.log("Destroying HostChannel");
+    window.removeEventListener('message', this.readyHandler);
+    if (this.channelInstance) {
+      this.channelInstance.port1.close();
+    }
   }
 }
 exports["default"] = HostChannel;
@@ -73,6 +93,7 @@ Object.defineProperty(exports, "__esModule", ({
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 class FluxLiveState {
   constructor() {
+    this.isLiveStateActive = true;
     this.fields = new Map();
     this.pageID = null;
     this.className = null;
@@ -167,6 +188,12 @@ class FluxLiveState {
   setClassName(className) {
     this.className = className;
   }
+  setLiveStateActive(isActive) {
+    this.isLiveStateActive = isActive;
+  }
+  getIsActive() {
+    return this.isLiveStateActive;
+  }
   /**
    * Get debug information
    */
@@ -175,7 +202,8 @@ class FluxLiveState {
       pageID: this.pageID,
       className: this.className,
       fields: this.getChangedFields(),
-      fieldCount: this.fields.size
+      fieldCount: this.fields.size,
+      isLiveStateActive: this.isLiveStateActive
     });
   }
 }
@@ -204,7 +232,14 @@ Object.defineProperty(exports, "__esModule", ({
 const HostChannel_1 = __importDefault(__webpack_require__(/*! ../bind/HostChannel */ "./client/bind/HostChannel.ts"));
 const FluxLiveState_1 = __importDefault(__webpack_require__(/*! ./FluxLiveState */ "./client/cms-live-updates/FluxLiveState.ts"));
 const API_ENDPOINT = "/flux/api";
-function sendTemplateUpdate(hostChannel, fluxState) {
+const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
+/**
+ * Sends the HTML down to the frame
+ * @param hostChannel
+ * @param fluxState
+ * @returns
+ */
+async function sendTemplateUpdate(hostChannel, fluxState) {
   return fluxState.sendUpdate(API_ENDPOINT).then(response => {
     if (!response.trusted) {
       console.warn("Source HTML returned unsafe html");
@@ -225,9 +260,29 @@ window.addEventListener("load", function () {
   const $ = window.jQuery;
   const entwine = $.entwine;
   const fluxState = new FluxLiveState_1.default();
-  const frameElementTarget = 'iframe[name="cms-preview-iframe"]';
   const url = window.location.origin;
-  const hostChannel = new HostChannel_1.default(url, frameElementTarget);
+  const hostChannel = new HostChannel_1.default(url, CMS_FRAME);
+  // Watch for split mode changes
+  const cmsContainer = document.querySelector('.cms-container');
+  if (cmsContainer) {
+    const observer = new MutationObserver(mutations => {
+      mutations.forEach(mutation => {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          let target = mutation.target;
+          if (target.classList.contains('cms-container--split-mode')) {
+            fluxState.setLiveStateActive(true);
+            sendTemplateUpdate(hostChannel, fluxState);
+          } else {
+            fluxState.setLiveStateActive(false);
+          }
+        }
+      });
+    });
+    observer.observe(cmsContainer, {
+      attributes: true,
+      attributeFilter: ['class']
+    });
+  }
   entwine("flux", function ($) {
     $("[fx-key]").entwine({
       onmatch: function (event) {
@@ -291,6 +346,9 @@ window.addEventListener("load", function () {
             type = 'HTML';
           }
           fluxState.updateField(bindKey, value);
+          if (!fluxState.getIsActive()) {
+            return;
+          }
           if (type === 'Text') {
             hostChannel.broadcastMessage({
               type: 'textUpdate',
@@ -321,23 +379,29 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.logger = void 0;
+/**
+ * Logger will only output for development env only
+ */
 class Logger {
   constructor(env) {
-    this.env = env;
-  }
-  log(...args) {
-    if (this.env === 'development') {
-      console.log(...args);
-    }
-  }
-  warn(...args) {
-    if (this.env === 'development') {
-      console.warn(...args);
-    }
-  }
-  error(...args) {
-    if (this.env === 'development') {
-      console.error(...args);
+    if (env === 'development') {
+      // Bind console methods directly to preserve call stack location
+      this.log = console.log.bind(console);
+      this.warn = console.warn.bind(console);
+      this.error = console.error.bind(console);
+      this.table = console.table.bind(console);
+      this.time = console.time.bind(console);
+      this.timeEnd = console.timeEnd.bind(console);
+      this.timeLog = console.timeLog.bind(console);
+    } else {
+      // No-op functions for non-development
+      this.log = () => {};
+      this.warn = () => {};
+      this.error = () => {};
+      this.table = () => {};
+      this.time = () => {};
+      this.timeEnd = () => {};
+      this.timeLog = () => {};
     }
   }
 }

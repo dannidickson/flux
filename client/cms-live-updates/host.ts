@@ -5,8 +5,15 @@ import { logger } from "../core/logger";
 import FluxLiveState from "./FluxLiveState";
 
 const API_ENDPOINT = "/flux/api";
+const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
 
-function sendTemplateUpdate(hostChannel: any, fluxState: FluxLiveState) {
+/**
+ * Sends the HTML down to the frame
+ * @param hostChannel
+ * @param fluxState
+ * @returns
+ */
+async function sendTemplateUpdate(hostChannel: any, fluxState: FluxLiveState) {
     return fluxState.sendUpdate(API_ENDPOINT)
         .then((response) => {
             if (!response.trusted) {
@@ -33,11 +40,33 @@ window.addEventListener("load", function () {
     const entwine = $.entwine;
     const fluxState = new FluxLiveState();
 
-    const frameElementTarget = 'iframe[name="cms-preview-iframe"]';
-
     const url = window.location.origin;
 
-    const hostChannel = new HostChannel(url, frameElementTarget);
+    const hostChannel = new HostChannel(url, CMS_FRAME);
+
+    // Watch for split mode changes
+    const cmsContainer = document.querySelector('.cms-container');
+    if (cmsContainer) {
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                    let target = mutation.target as HTMLElement;
+                    if (target.classList.contains('cms-container--split-mode')) {
+                        fluxState.setLiveStateActive(true);
+                        sendTemplateUpdate(hostChannel, fluxState);
+                    }
+                    else {
+                        fluxState.setLiveStateActive(false);
+                    }
+                }
+            });
+        });
+
+        observer.observe(cmsContainer, {
+            attributes: true,
+            attributeFilter: ['class']
+        });
+    }
 
     entwine("flux", function ($) {
         $("[fx-key]").entwine({
@@ -120,6 +149,9 @@ window.addEventListener("load", function () {
                     }
 
                     fluxState.updateField(bindKey, value);
+                    if (!fluxState.getIsActive()) {
+                        return;
+                    }
 
                     if (type === 'Text') {
                         hostChannel.broadcastMessage({

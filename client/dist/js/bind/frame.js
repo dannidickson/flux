@@ -14,23 +14,29 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.logger = void 0;
+/**
+ * Logger will only output for development env only
+ */
 class Logger {
   constructor(env) {
-    this.env = env;
-  }
-  log(...args) {
-    if (this.env === 'development') {
-      console.log(...args);
-    }
-  }
-  warn(...args) {
-    if (this.env === 'development') {
-      console.warn(...args);
-    }
-  }
-  error(...args) {
-    if (this.env === 'development') {
-      console.error(...args);
+    if (env === 'development') {
+      // Bind console methods directly to preserve call stack location
+      this.log = console.log.bind(console);
+      this.warn = console.warn.bind(console);
+      this.error = console.error.bind(console);
+      this.table = console.table.bind(console);
+      this.time = console.time.bind(console);
+      this.timeEnd = console.timeEnd.bind(console);
+      this.timeLog = console.timeLog.bind(console);
+    } else {
+      // No-op functions for non-development
+      this.log = () => {};
+      this.warn = () => {};
+      this.error = () => {};
+      this.table = () => {};
+      this.time = () => {};
+      this.timeEnd = () => {};
+      this.timeLog = () => {};
     }
   }
 }
@@ -91,6 +97,12 @@ class FrameChannel {
     window.addEventListener("message", this.messageHandler);
     // Set the default handler or use the one passed in
     this.onRecievedMessage = onRecievedMessage || this.defaultMessageHandler.bind(this);
+    // Signal to parent that frame is ready (handles both initial load and reloads)
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        type: 'FRAME_READY'
+      }, window.location.origin);
+    }
   }
   setupMessageEvents(event) {
     if (event.origin !== window.location.origin) {
@@ -106,8 +118,6 @@ class FrameChannel {
       this.channel = event.ports[0];
       this.channel.onmessage = event => this.onRecievedMessage(event);
       this.channel.start();
-      // remove the original message listener
-      window.removeEventListener("message", this.messageHandler);
     }
   }
   /**

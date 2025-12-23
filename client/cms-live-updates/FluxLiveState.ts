@@ -13,6 +13,7 @@ interface FluxFieldState {
 }
 
 class FluxLiveState {
+    private isLiveStateActive: boolean = true;
     private fields: Map<string, any>;
     private pageID: number | null;
     private className: string | null;
@@ -88,7 +89,6 @@ class FluxLiveState {
      * Send state to the backend and get updated template
      */
     public async sendUpdate(apiEndpoint: string): Promise<any> {
-
         const state = this.toJSON();
 
         if (this.pageID === null) {
@@ -127,6 +127,14 @@ class FluxLiveState {
         this.className = className;
     }
 
+    public setLiveStateActive(isActive: boolean): void {
+        this.isLiveStateActive = isActive;
+    }
+
+    public getIsActive(): boolean {
+        return this.isLiveStateActive;
+    }
+
     /**
      * Get debug information
      */
@@ -135,7 +143,8 @@ class FluxLiveState {
             pageID: this.pageID,
             className: this.className,
             fields: this.getChangedFields(),
-            fieldCount: this.fields.size
+            fieldCount: this.fields.size,
+            isLiveStateActive: this.isLiveStateActive,
         });
     }
 }
