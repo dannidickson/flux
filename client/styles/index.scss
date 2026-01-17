@@ -1,0 +1,13 @@
+.flux-refresh__button  {
+  margin-left: auto !important;
+
+  &.hidden {
+    display: none;
+  }
+}
+
+// only override the preview-selector margin when the refresh button is present
+.flux-refresh__button:not(.hidden) ~ .preview-selector {
+  margin-left: unset !important;
+}
+

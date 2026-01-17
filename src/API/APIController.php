@@ -8,7 +8,9 @@ use SilverStripe\Control\Controller;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Core\Injector\Injector;
+use SilverStripe\Dev\Debug;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\Versioned\Versioned;
 
 class APIController extends Controller
 {
@@ -33,78 +35,122 @@ class APIController extends Controller
             ->addHeader("X-Flux-Trusted", true);
     }
 
-     /**
-      * Gets the DataObject and renders the template.
-      *
-      * Expects both the PageID and ClassName
-      * As well as the FluxLiveState Javascript object to be sent
-      *
-      * @todo this currently just renders the entire page for the POC
-      * @todo I expect Elemental blocks or 'include' to use the same API endpoint, so pageID will be renamed to ObjectID
-      *
-      * @see FluxLiveState
-      */
+    /**
+     * Gets the DataObject and renders the template.
+     *
+     * Supports rendering entire page OR specific segments (e.g., just a CTA element)
+     * Expects pageID, and optionally a target segment owner
+     *
+     * @see FluxLiveState
+     */
     public function templateUpdate(HTTPRequest $request): HTTPResponse
     {
-        $pageID = $request->getVar('pageID') ?? $request->postVar('pageID');
-        $className = $request->getVar('className') ?? $request->postVar('className') ?? SiteTree::class;
+        return Versioned::withVersionedMode(function () use ($request) {
+            Versioned::set_stage(Versioned::DRAFT);
 
-        if (!$pageID) {
-            return HTTPResponse::create(json_encode(['error' => 'pageID is required']), 400)
-                ->addHeader('Content-Type', 'application/json');
-        }
+            $pageID = $request->getVar('pageID') ?? $request->postVar('pageID');
+            $className = $request->getVar('className') ?? $request->postVar('className') ?? SiteTree::class;
+            $targetOwner = $request->getVar('owner') ?? $request->postVar('owner'); // Optional: specific segment to render
 
-        $liveState = json_decode($request->getBody(), true);
-        $changedFields = $liveState['fields'] ?? [];
+            if (!$pageID) {
+                return HTTPResponse::create(json_encode(['error' => 'pageID is required']), 400)
+                    ->addHeader('Content-Type', 'application/json');
+            }
 
-        $page = DataObject::get_by_id($className, $pageID);
+            $liveState = json_decode($request->getBody(), true);
+            $segmentChanges = $liveState['segmentChanges'] ?? [];
 
-        if (!$page) {
-            return HTTPResponse::create(json_encode(['error' => 'Page not found']), 404)
-                ->addHeader('Content-Type', 'application/json');
-        }
+            $page = DataObject::get_by_id($className, $pageID);
 
-        // Apply the LiveState changes
-        if ($changedFields) {
-            foreach ($changedFields as $fieldName => $value) {
-                if ($page->hasField($fieldName)) {
-                    $page->$fieldName = $value;
+            if (!$page) {
+                return HTTPResponse::create(json_encode(['error' => 'Page not found']), 404)
+                    ->addHeader('Content-Type', 'application/json');
+            }
+
+            // Apply segment-specific changes
+            foreach ($segmentChanges as $segmentKey => $segmentData) {
+                $segmentType = $segmentData['segmentType'] ?? 'Page';
+                $segmentID = $segmentData['segmentID'] ?? null;
+                $segmentClassName = $segmentData['className'] ?? null;
+                $fields = $segmentData['fields'] ?? [];
+
+                if ($segmentType === 'Page') {
+                    // Apply changes to page
+                    foreach ($fields as $fieldName => $value) {
+                        if ($page->hasField($fieldName)) {
+                            $page->$fieldName = $value;
+                        }
+                    }
+                } elseif ($segmentType === 'Element' && $segmentID && $segmentClassName) {
+                    // Apply changes to specific element
+                    $element = DataObject::get_by_id($segmentClassName, $segmentID);
+                    if ($element) {
+                        foreach ($fields as $fieldName => $value) {
+                            if ($element->hasField($fieldName)) {
+                                $element->$fieldName = $value;
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        $html = $this->renderPageTemplate($page);
+            // Render based on target
+            if ($targetOwner && isset($segmentChanges[$targetOwner])) {
+                // Render specific segment
+                $html = $this->renderSegment($targetOwner, $segmentChanges[$targetOwner]);
+            } else {
+                // Render entire page
+                $html = $this->renderPageTemplate($page);
+            }
 
-        // @todo add proper validation for 'Trusted'
-        $isTrusted = true;
+            // @todo add proper validation for 'Trusted'
+            $isTrusted = true;
 
-        $response = [
-            'pageID' => $pageID,
-            'className' => $className,
-            'html' => $html,
-            'changedFields' => $changedFields,
-            'trusted' => $isTrusted,
-        ];
+            $response = [
+                'pageID' => $pageID,
+                'className' => $className,
+                'html' => $html,
+                'targetOwner' => $targetOwner,
+                'segmentChanges' => $segmentChanges,
+                'trusted' => $isTrusted,
+            ];
 
-        return HTTPResponse::create(json_encode($response))
-            ->addHeader("X-Flux-HTML", true)
-            ->addHeader("X-Flux-Trusted", $isTrusted ? "true" : "false")
-            ->addHeader('Content-Type', 'application/json');
+            return HTTPResponse::create(json_encode($response))
+                ->addHeader("X-Flux-HTML", true)
+                ->addHeader("X-Flux-Trusted", $isTrusted ? "true" : "false")
+                ->addHeader('Content-Type', 'application/json');
+        });
     }
 
-     /**
-        * Takes the dataObject with the Changed fields from FluxLiveState and renders the changes
-        * Creates a controller context and renders the page as it would appear on the frontend
-        *
-        * @todo in reality there would be a "final" step that checks if the Field
-        * that triggered included a 'target' or 'include' property
-        *
-        * For targets it would query the DOMDocument and return only that specific html.
-        *   Alternatively it would send back the full HTML. This wouldnt render the entire elemental area,
-        *   because it will have its seperate functional call
-        *
-        * For `include` it would use the value as the name of the File in the `includes` directory to render
-        */
+    /**
+     * Render a specific segment (e.g., just a CTA element)
+     *
+     * @param string $owner The owner identifier (e.g., #element-5)
+     * @param array $segmentData Segment metadata
+     */
+    private function renderSegment(string $owner, array $segmentData): string
+    {
+        $segmentID = $segmentData['segmentID'] ?? null;
+        $segmentClassName = $segmentData['className'] ?? null;
+
+        if (!$segmentID || !$segmentClassName) {
+            return '';
+        }
+
+        $dataObject = DataObject::get_by_id($segmentClassName, $segmentID);
+
+        if (!$dataObject) {
+            return '';
+        }
+
+        // Render just this segment
+        return $dataObject->forTemplate();
+    }
+
+    /**
+     * Takes the dataObject with the Changed fields from FluxLiveState and renders the changes
+     * Creates a controller context and renders the page as it would appear on the frontend
+     */
     private function renderPageTemplate(DataObject $dataObject): string
     {
         if ($dataObject instanceof SiteTree) {

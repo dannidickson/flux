@@ -2,20 +2,38 @@
 
 namespace Flux\Extension;
 
-use Flux\Repository\FluxRepository;
 use SilverStripe\Core\Extension;
 use SilverStripe\Dev\Debug;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\FormField;
 
+/**
+ * Extension for DataObject
+ * Handles setting flux field attributes on CMS form fields
+ */
 class FluxDataObjectExtension extends Extension
 {
+    /**
+     * Hook into updateCMSFields to set flux field attributes
+     */
+    public function updateCMSFields(FieldList $fields)
+    {
+        $this->setFluxFields($fields);
+    }
+
+    /**
+     * Set flux field attributes on form fields
+     */
     public function setFluxFields(FieldList $fields)
     {
         $config = $this->getOwner()->config();
         $fluxFields = $config->get("flux_fields");
 
         $hasOne = $config->get("has_one");
+
+        if (!$fluxFields || !is_array($fluxFields)) {
+            return $fields;
+        }
 
         foreach ($fluxFields as $key => $value) {
             $field = $fields->dataFieldByName($key);
@@ -46,7 +64,6 @@ class FluxDataObjectExtension extends Extension
 
         // $fluxType = FluxRepository::getFluxDataType($key, $this->getOwner()->config());
 
-
         $formFieldType = $field->getInputType();
         $schemaDataType = $field->getSchemaDataType();
         $componentType = $field->getSchemaComponent();
@@ -62,32 +79,18 @@ class FluxDataObjectExtension extends Extension
             return $field;
         }
 
-        $field->setAttribute("fx-key", $key);
-
-
-        if ($fluxType === "Text" || $fluxType === "HTML") {
-            $field->setAttribute("fx-event", "keyup");
+        // Delegate to the FormField extension to apply flux attributes
+        // Each field type is now responsible for its own attribute configuration
+        if ($field->hasMethod('applyFluxAttributes')) {
+            $field->applyFluxAttributes($key, $value, $fluxType);
         }
 
-        if ($fluxType === "Boolean") {
-            $field->setAttribute("fx-event", "click");
+        if ($this->getOwner()->hasMethod('getOwnerTarget')) {
+            $ownerTarget = $this->getOwner()->getOwnerTarget();
+            if ($ownerTarget) {
+                $field->setAttribute("fx-owner", $ownerTarget);
+            }
         }
-
-        if ($fluxType === "UploadField") {
-            $field->setAttribute("fx-event", "change");
-            $field->setAttribute("fx-proxy", "input[type='hidden']");
-            $field->setAttribute("fx-proxy-type", "previousElementSibling");
-        }
-
-        if ($fluxType === 'SingleSelect') {
-            $field->setAttribute("fx-event", "change");
-            $field->setAttribute("fx-proxy", "input[type='hidden']");
-            $field->setAttribute("fx-proxy-type", "default");
-        }
-
-        // $field->setAttribute("fx-bind", $value); // class to bind on the front end
-        // $field->setAttribute("fx-type", $fluxType);
-
 
         return $field;
     }
@@ -98,5 +101,10 @@ class FluxDataObjectExtension extends Extension
     public function applyFluxAttributes(FieldList $fields): void
     {
         $this->setFluxFields($fields);
+    }
+
+    public function getFluxEnabled(): bool
+    {
+        return true;
     }
 }

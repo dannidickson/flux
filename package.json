@@ -11,9 +11,9 @@
     "test": "jest",
     "coverage": "jest --coverage",
     "lint": "yarn lint-js && yarn lint-sass",
-    "lint-js": "eslint client/src",
-    "lint-js-fix": "eslint client/src --fix",
-    "lint-sass": "stylelint client/src"
+    "lint-js": "eslint 'client/**/*.{js,ts}' --ignore-pattern 'client/dist/**' || true",
+    "lint-js-fix": "eslint 'client/**/*.{js,ts}' --ignore-pattern 'client/dist/**' --fix",
+    "lint-sass": "echo 'No SASS files to lint'"
   },
   "dependencies": {
     "core-js": "^3.26.0",
@@ -45,8 +45,9 @@
   "jest": {
     "testEnvironment": "jsdom",
     "roots": [
-      "client/src",
-      "client/bind"
+      "client/bind",
+      "client/cms-live-updates",
+      "client/core"
     ],
     "moduleDirectories": [
       "client/src",

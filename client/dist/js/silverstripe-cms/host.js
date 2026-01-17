@@ -97,28 +97,54 @@ class FluxLiveState {
     this.fields = new Map();
     this.pageID = null;
     this.className = null;
-    this.initializeFromFluxLiveConfig();
+    this.segments = [];
+    this.objects = new Map();
+    this.initializeFromFluxConfig();
   }
   /**
    * Initialize state from global FluxConfig
+   * Segments is now a flat array
    */
-  initializeFromFluxLiveConfig() {
-    if (typeof window !== 'undefined' && window.FluxLiveConfig) {
-      const config = window.FluxLiveConfig;
-      this.pageID = config.DataObjectID || null;
-      this.className = config.ClassName || null;
+  initializeFromFluxConfig() {
+    if (typeof window !== 'undefined' && window.FluxConfig) {
+      const config = window.FluxConfig;
+      this.segments = config.Segments || [];
+      // Find the Page segment
+      const pageSegment = this.segments.find(s => s.Type === 'Page');
+      if (pageSegment) {
+        this.pageID = pageSegment.ID ? Number(pageSegment.ID) : null;
+        this.className = pageSegment.ClassName || null;
+      }
     }
   }
   /**
    * Update a field's value in the state
+   * Now includes segment ownership information
    */
-  updateField(key, value, type) {
+  updateField(key, value, options) {
+    // Find the segment this field belongs to
+    let segment;
+    if (options?.owner) {
+      // Find segment by owner
+      segment = this.segments.find(s => s.owner === options.owner);
+    } else {
+      // Default to Page segment
+      segment = this.segments.find(s => s.Type === 'Page');
+    }
     this.fields.set(key, {
       key,
       value,
-      type,
+      type: options?.type,
+      owner: options?.owner || segment?.owner,
+      segmentType: options?.segmentType || segment?.Type || 'Page',
+      className: options?.className || segment?.ClassName || '',
+      segmentID: options?.segmentID || segment?.ID || '',
       updatedAt: Date.now()
     });
+    if (true) {
+      // @ts-ignore
+      window.FluxLiveState = this; // Expose for debugging
+    }
   }
   /**
    * Get a field's current value
@@ -138,6 +164,27 @@ class FluxLiveState {
     return fields;
   }
   /**
+   * Get changed fields grouped by segment
+   * Returns a structure that maps owner -> fields
+   */
+  getChangedFieldsBySegment() {
+    const segmentChanges = {};
+    this.fields.forEach(fieldData => {
+      const segmentKey = fieldData.owner || 'Page';
+      if (!segmentChanges[segmentKey]) {
+        segmentChanges[segmentKey] = {
+          segmentType: fieldData.segmentType,
+          className: fieldData.className,
+          segmentID: fieldData.segmentID,
+          owner: fieldData.owner,
+          fields: {}
+        };
+      }
+      segmentChanges[segmentKey].fields[fieldData.key] = fieldData.value;
+    });
+    return segmentChanges;
+  }
+  /**
    * Clear all changed fields
    */
   clear() {
@@ -145,13 +192,28 @@ class FluxLiveState {
   }
   /**
    * Get the state as JSON for sending to the server
+   * Includes segment ownership information
    */
   toJSON() {
     return {
       pageID: this.pageID,
       className: this.className,
-      fields: this.getChangedFields()
+      segments: this.segments,
+      fields: this.getChangedFields(),
+      segmentChanges: this.getChangedFieldsBySegment()
     };
+  }
+  /**
+   * Get the segments array
+   */
+  getSegments() {
+    return this.segments;
+  }
+  /**
+   * Get only Element segments
+   */
+  getElements() {
+    return this.segments.filter(s => s.Type === 'Element');
   }
   /**
    * Send state to the backend and get updated template
@@ -194,6 +256,15 @@ class FluxLiveState {
   getIsActive() {
     return this.isLiveStateActive;
   }
+  addToObject(key) {
+    this.objects.set(key, {
+      key: key,
+      type: 'object'
+    });
+  }
+  getObjects() {
+    return this.objects;
+  }
   /**
    * Get debug information
    */
@@ -201,6 +272,7 @@ class FluxLiveState {
     logger_1.logger.log('FluxLiveState:', {
       pageID: this.pageID,
       className: this.className,
+      segments: this.segments,
       fields: this.getChangedFields(),
       fieldCount: this.fields.size,
       isLiveStateActive: this.isLiveStateActive
@@ -230,6 +302,7 @@ Object.defineProperty(exports, "__esModule", ({
 // @ts-nocheck
 /* eslint-disable */
 const HostChannel_1 = __importDefault(__webpack_require__(/*! ../bind/HostChannel */ "./client/bind/HostChannel.ts"));
+const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const FluxLiveState_1 = __importDefault(__webpack_require__(/*! ./FluxLiveState */ "./client/cms-live-updates/FluxLiveState.ts"));
 const API_ENDPOINT = "/flux/api";
 const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
@@ -239,22 +312,42 @@ const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
  * @param fluxState
  * @returns
  */
-async function sendTemplateUpdate(hostChannel, fluxState) {
-  return fluxState.sendUpdate(API_ENDPOINT).then(response => {
+let lastCallTime = 0;
+/**
+ * Should probably consider doing this via a queue system
+ * This way I can tell which updates can be skipped, or if it requires a template update
+ * We need to consider this as we are listening to modal open and close, when the close is triggered
+ * it fires this update, but might not require any changes.
+ *
+ * @param hostChannel
+ * @param fluxState
+ * @param cooldownMs
+ * @returns
+ */
+async function sendTemplateUpdate(hostChannel, fluxState, cooldownMs = 5000 // 5 seconds default
+) {
+  const now = Date.now();
+  if (now - lastCallTime < cooldownMs) {
+    logger_1.logger.log("Still in cooldown, skipping update");
+    return; // Skip this call
+  }
+  lastCallTime = now;
+  // Execute immediately
+  try {
+    const response = await fluxState.sendUpdate(API_ENDPOINT);
     if (!response.trusted) {
       console.warn("Source HTML returned unsafe html");
     }
-    // Broadcast the HTML to the iframe for live updates
     hostChannel.broadcastMessage({
       type: 'templateUpdate',
       html: response.html,
       changedFields: response.changedFields
     });
     return response;
-  }).catch(error => {
+  } catch (error) {
     console.error("Template update failed:", error);
     throw error;
-  });
+  }
 }
 window.addEventListener("load", function () {
   const $ = window.jQuery;
@@ -262,23 +355,75 @@ window.addEventListener("load", function () {
   const fluxState = new FluxLiveState_1.default();
   const url = window.location.origin;
   const hostChannel = new HostChannel_1.default(url, CMS_FRAME);
+  // Send FluxConfig to iframe when it loads
+  const sendFluxConfigToIframe = () => {
+    if (window.FluxConfig) {
+      hostChannel.broadcastMessage({
+        type: 'configUpdate',
+        config: window.FluxConfig
+      });
+    }
+  };
+  // Send config when iframe loads
+  const iframe = document.querySelector(CMS_FRAME);
+  if (iframe) {
+    iframe.addEventListener('load', sendFluxConfigToIframe);
+  }
   // Watch for split mode changes
   const cmsContainer = document.querySelector('.cms-container');
   if (cmsContainer) {
+    // Track previous split mode state to detect transitions
+    let wasSplitMode = cmsContainer.classList.contains('cms-container--split-mode');
+    // Set initial state without triggering update
+    if (wasSplitMode) {
+      fluxState.setLiveStateActive(true);
+    }
     const observer = new MutationObserver(mutations => {
       mutations.forEach(mutation => {
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
           let target = mutation.target;
-          if (target.classList.contains('cms-container--split-mode')) {
+          const isSplitMode = target.classList.contains('cms-container--split-mode');
+          // Only trigger update when transitioning TO split mode, not when already in it
+          if (isSplitMode && !wasSplitMode) {
             fluxState.setLiveStateActive(true);
-            sendTemplateUpdate(hostChannel, fluxState);
-          } else {
+            // Send config to iframe when entering split mode
+            sendFluxConfigToIframe();
+            // Only send template update if there are field changes
+            if (fluxState.getChangedFields() && Object.keys(fluxState.getChangedFields()).length > 0) {
+              sendTemplateUpdate(hostChannel, fluxState);
+            }
+          } else if (!isSplitMode && wasSplitMode) {
             fluxState.setLiveStateActive(false);
           }
+          wasSplitMode = isSplitMode;
         }
       });
     });
     observer.observe(cmsContainer, {
+      attributes: true,
+      attributeFilter: ['class']
+    });
+  }
+  // Watch for modal-open class on body element
+  const bodyElement = document.body;
+  if (bodyElement) {
+    const bodyObserver = new MutationObserver(mutations => {
+      mutations.forEach(mutation => {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          const hasModalOpen = bodyElement.classList.contains('modal-open');
+          if (hasModalOpen) {
+            console.log('Modal opened');
+            console.log(fluxState);
+          } else {
+            this.setTimeout(() => {
+              console.log('Modal closed');
+              sendTemplateUpdate(hostChannel, fluxState);
+            }, 500);
+          }
+        }
+      });
+    });
+    bodyObserver.observe(bodyElement, {
       attributes: true,
       attributeFilter: ['class']
     });
@@ -291,6 +436,8 @@ window.addEventListener("load", function () {
         const bindKey = element.getAttribute("fx-key");
         const bindEvent = element.getAttribute("fx-event");
         const proxyElement = element.getAttribute("fx-proxy");
+        const owner = element.getAttribute("fx-owner") ?? null;
+        const type = element.getAttribute("fx-type") ?? null;
         // Watch for file upload / react dropdown changes
         if (proxyElement) {
           const proxyElementType = element.getAttribute("fx-proxy-type");
@@ -300,6 +447,12 @@ window.addEventListener("load", function () {
               break;
             case "previousElementSibling":
               element = element.previousElementSibling;
+              break;
+            case "default":
+            case "element":
+            case "self":
+            default:
+              element = element.querySelector(proxyElement);
               break;
           }
           let previousValue = null;
@@ -317,7 +470,9 @@ window.addEventListener("load", function () {
             }
             if (currentValue !== previousValue) {
               previousValue = currentValue;
-              fluxState.updateField(bindKey, currentValue);
+              fluxState.updateField(bindKey, currentValue, {
+                owner: owner
+              });
               sendTemplateUpdate(hostChannel, fluxState);
             }
           });
@@ -331,11 +486,31 @@ window.addEventListener("load", function () {
           return;
         }
         if (!element) return;
+        if (element.tagName === "TEXTAREA" && type === "HTML") {
+          var editor = tinymce.get(element.id);
+          if (editor) {
+            editor.on("keyup", function () {
+              document.querySelector('.flux-refresh__button').classList.toggle('hidden', false);
+              // @TODO this is a good case for a 'patchUpdate'
+              // where instead of generating the entire HTML, it sends a patch to the specific binding key
+              // This would handle
+              hostChannel.broadcastMessage({
+                type: 'textUpdate',
+                key: bindKey,
+                owner: owner,
+                event: bindEvent,
+                value: editor.getContent()
+              });
+            });
+          }
+        }
         element.addEventListener(bindEvent, listenerEvent => {
           let event, value, type;
           if (bindEvent === "keyup") {
             value = listenerEvent.target.value;
-            type = 'Text';
+            if (element.getAttribute('fx-event-type') === 'templateUpdate') {
+              type = 'HTML';
+            } else if (value.length < 1) type = 'HTML';else type = 'Text';
           }
           if (bindEvent === "click") {
             value = listenerEvent.target.checked;
@@ -345,7 +520,10 @@ window.addEventListener("load", function () {
             value = listenerEvent.target.value || listenerEvent.target.checked;
             type = 'HTML';
           }
-          fluxState.updateField(bindKey, value);
+          fluxState.updateField(bindKey, value, {
+            type: type,
+            owner: owner
+          });
           if (!fluxState.getIsActive()) {
             return;
           }
@@ -353,6 +531,7 @@ window.addEventListener("load", function () {
             hostChannel.broadcastMessage({
               type: 'textUpdate',
               key: bindKey,
+              owner: owner,
               event: bindEvent,
               value
             });
@@ -360,6 +539,14 @@ window.addEventListener("load", function () {
           }
           sendTemplateUpdate(hostChannel, fluxState);
         });
+      }
+    });
+    $(".flux-refresh__button").entwine({
+      onclick: function (event) {
+        var self = $(this);
+        let element = self[0];
+        sendTemplateUpdate(hostChannel, fluxState);
+        element.classList.toggle('hidden', true);
       }
     });
   });
@@ -421,6 +608,12 @@ exports.logger = new Logger("development");
 /******/ 		var cachedModule = __webpack_module_cache__[moduleId];
 /******/ 		if (cachedModule !== undefined) {
 /******/ 			return cachedModule.exports;
+/******/ 		}
+/******/ 		// Check if module exists (development only)
+/******/ 		if (__webpack_modules__[moduleId] === undefined) {
+/******/ 			var e = new Error("Cannot find module '" + moduleId + "'");
+/******/ 			e.code = 'MODULE_NOT_FOUND';
+/******/ 			throw e;
 /******/ 		}
 /******/ 		// Create a new module (and put it into the cache)
 /******/ 		var module = __webpack_module_cache__[moduleId] = {

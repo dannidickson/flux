@@ -1,12 +1,23 @@
 import FrameChannel from "../bind/FrameChannel";
 // @ts-ignore
 import Idiomorph from "idiomorph";
+import { logger } from "../core/logger";
+import FluxLiveState from "./FluxLiveState";
 
-// Declare Idiomorph global type
 declare global {
     interface Window {
         Idiomorph: {
             morph: (oldNode: Node | HTMLElement, newContent: string | Node, options?: any) => void;
+        };
+        FluxConfig?: {
+            Segments: Array<{
+                Type: 'Page' | 'Element';
+                ID: string | number;
+                ClassName: string;
+                owner?: string;
+            }>;
+            ChangeSet: Record<string, Record<string, any>>;
+            Events: any[];
         };
     }
 }
@@ -14,38 +25,80 @@ declare global {
 const frame = new FrameChannel();
 
 frame.onRecievedMessage = (event) => {
+    const messageType = event.data.type;
+
+    if (messageType === 'configUpdate') {
+        window.FluxConfig = event.data.config;
+        console.log('FluxConfig received from host:', window.FluxConfig);
+
+        addBindingsToSegments();
+        return;
+    }
+
     updateElement(event.data);
 };
 
 window.addEventListener('DOMContentLoaded', () => {
-    if (!window.FluxConfig) return;
-
-    addElementBindings();
+    if (window.FluxConfig) {
+        addBindingsToSegments();
+    }
 });
 
 /**
  * Adds the Config bindings to each element
- * @returns
+ * Iterates through flat Segments array and looks up ChangeSet by ClassName
  */
-const addElementBindings = () => {
-    const { Fields } = window.FluxConfig;
+const addBindingsToSegments = () => {
+    if (!window.FluxConfig) return;
 
-    if (Object.keys(Fields).length === 0) return;
+    const { Segments, ChangeSet } = window.FluxConfig;
 
-    for (const [key, value] of Object.entries(Fields)) {
-        addBindingToElement(value);
+    if (!Segments || !ChangeSet) return;
+
+    console.log('Segments:', Segments);
+    console.log('ChangeSet:', ChangeSet);
+
+    // Loop through flat segments array
+    for (const segment of Segments) {
+        // Look up fields for this segment by ClassName
+        const segmentFields = ChangeSet[segment.ClassName];
+
+        if (!segmentFields) {
+            console.log(`No fields found for ${segment.ClassName}`);
+            continue;
+        }
+
+        // Apply bindings for each field in this segment
+        for (const [fieldKey, fieldValue] of Object.entries(segmentFields)) {
+            addBindingToElement(fieldValue, segment);
+        }
     }
 }
 
-const addBindingToElement = (field: any) => {
-    const element = document.querySelector(field.bind);
+const addBindingToElement = (field: any, segment: any) => {
+    // Build scoped query selector
+    const querySelectorParts = [];
 
-    if (!element) {
-        console.warn(`Flux: Cannot find element for: ${field.key}`, field);
+    if (segment.owner) {
+        querySelectorParts.push(`${segment.owner}`);
     }
 
-    element?.setAttribute(`fx-key`, field.key);
-    element?.setAttribute(`fx-type`, field.type);
+    querySelectorParts.push(field.bind);
+
+    const querySelectorPath = querySelectorParts.join(' ');
+    const element = document.querySelector(querySelectorPath);
+
+    if (!element) {
+        console.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
+        return;
+    }
+
+    element.setAttribute(`fx-key`, field.key);
+    element.setAttribute(`fx-type`, field.type);
+
+    if (segment.owner) {
+        element.setAttribute(`fx-owner`, segment.owner);
+    }
 }
 
 /**
@@ -60,7 +113,6 @@ const addBindingToElement = (field: any) => {
  */
 const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
     console.log('Flux message received:', fluxBroadCastMessage);
-
     // Handle full template updates
     if (fluxBroadCastMessage.type === "templateUpdate") {
         if (!fluxBroadCastMessage.html) {
@@ -78,7 +130,7 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
         // Use Idiomorph to morph the entire document
         Idiomorph.morph(document.documentElement, newDoc.documentElement, {
             head: {
-                style: 'morph'  // Morph style tags in the head
+                style: 'morph'
             },
             callbacks: {
                 beforeNodeMorphed: (oldNode: any, newNode: any) => {
@@ -94,13 +146,27 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
         console.log('Document morphed successfully');
         console.timeEnd('morph');
 
-        addElementBindings();
+        addBindingsToSegments();
         return;
     }
 
     // Handle individual field updates (textUpdate)
     if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-        const element = document.querySelector(`[fx-key="${fluxBroadCastMessage.key}"]`);
+        console.log(fluxBroadCastMessage);
+
+        const querySelectorParts = [];
+
+        if (fluxBroadCastMessage.owner) {
+            querySelectorParts.push(`${fluxBroadCastMessage.owner}`);
+        }
+
+        querySelectorParts.push(`[fx-key="${fluxBroadCastMessage.key}"]`);
+
+        const querySelectorPath = querySelectorParts.join(' ');
+
+        console.log(querySelectorPath);
+
+        const element = document.querySelector(querySelectorPath);
 
         if (!element) {
             console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);

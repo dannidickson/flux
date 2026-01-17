@@ -10,6 +10,7 @@ interface FluxBroadCastMessage {
     key?: string;
     event?: string;
     value?: string;
+    owner?: string | null;
     changedFields?: Record<string, any>;
     targetKey?: string;
 }

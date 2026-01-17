@@ -1,0 +1,66 @@
+---
+Name: flux-form-field-extensions
+After: '#coreconfig'
+---
+
+SilverStripe\Forms\FormField:
+  extensions:
+    FluxFormFieldExtension: Flux\Extension\Forms\FormFieldExtension
+
+SilverStripe\Forms\TextField:
+  extensions:
+    FluxTextFieldExtension: Flux\Extension\Forms\TextFieldExtension
+
+SilverStripe\Forms\CheckboxField:
+  extensions:
+    FluxCheckboxFieldExtension: Flux\Extension\Forms\CheckboxFieldExtension
+
+SilverStripe\Forms\OptionsetField:
+  extensions:
+    FluxOptionsetFieldExtension: Flux\Extension\Forms\OptionsetFieldExtension
+
+# Add SingleSelectField extension when you have the class name
+SilverStripe\Forms\SingleSelectField:
+  extensions:
+    FluxSingleSelectFieldExtension: Flux\Extension\Forms\SingleSelectFieldExtension
+
+SilverStripe\Forms\HTMLEditor\HTMLEditorField:
+  extensions:
+    FluxHTMLEditorFieldExtension: Flux\Extension\Forms\HTMLEditorFieldExtension
+
+---
+Only:
+  moduleexists: 'silverstripe/asset-admin'
+  classexists: 'SilverStripe\AssetAdmin\Forms\UploadField'
+---
+SilverStripe\AssetAdmin\Forms\UploadField:
+  extensions:
+    FluxUploadFieldExtension:  Flux\Extension\Forms\UploadFieldExtension
+
+---
+Only:
+  moduleexists: 'silverstripe/linkfield'
+  classexists: 'SilverStripe\LinkField\Form\LinkField'
+
+# @TODO:
+# Note OOTB this will not work, as the LinkFieldController does not have the extension point for `updateForm`
+# I used a forked version, create PR to silverstripe/linkfield to add
+# LinkFieldController::createLinkForm() $this->extend('updateForm', $form, $link, $operation);
+---
+SilverStripe\LinkField\Form\LinkField:
+  extensions:
+    FluxLinkFieldExtension: Flux\Extension\Forms\LinkFieldExtension
+
+SilverStripe\LinkField\Controllers\LinkFieldController:
+  extensions:
+    FluxLinkFieldControllerExtension: Flux\Extension\Controller\LinkFieldControllerExtension
+
+# Disallow flux attributes on password fields
+# Throw an error if someone actually tries to add flux attributes to a password field
+SilverStripe\Forms\PasswordField:
+  extensions:
+    FluxThrowErrorForPasswordFieldExtension:  Flux\Extension\Forms\ThrowErrorForPasswordFieldExtension
+
+SilverStripe\Forms\ConfirmedPasswordField:
+  extensions:
+    FluxThrowErrorForPasswordFieldExtension:  Flux\Extension\Forms\ThrowErrorForPasswordFieldExtension

@@ -83,32 +83,65 @@ const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../bind/FrameChan
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
 const frame = new FrameChannel_1.default();
 frame.onRecievedMessage = event => {
+  const messageType = event.data.type;
+  if (messageType === 'configUpdate') {
+    window.FluxConfig = event.data.config;
+    console.log('FluxConfig received from host:', window.FluxConfig);
+    addBindingsToSegments();
+    return;
+  }
   updateElement(event.data);
 };
 window.addEventListener('DOMContentLoaded', () => {
-  if (!window.FluxConfig) return;
-  addElementBindings();
+  if (window.FluxConfig) {
+    addBindingsToSegments();
+  }
 });
 /**
  * Adds the Config bindings to each element
- * @returns
+ * Iterates through flat Segments array and looks up ChangeSet by ClassName
  */
-const addElementBindings = () => {
+const addBindingsToSegments = () => {
+  if (!window.FluxConfig) return;
   const {
-    Fields
+    Segments,
+    ChangeSet
   } = window.FluxConfig;
-  if (Object.keys(Fields).length === 0) return;
-  for (const [key, value] of Object.entries(Fields)) {
-    addBindingToElement(value);
+  if (!Segments || !ChangeSet) return;
+  console.log('Segments:', Segments);
+  console.log('ChangeSet:', ChangeSet);
+  // Loop through flat segments array
+  for (const segment of Segments) {
+    // Look up fields for this segment by ClassName
+    const segmentFields = ChangeSet[segment.ClassName];
+    if (!segmentFields) {
+      console.log(`No fields found for ${segment.ClassName}`);
+      continue;
+    }
+    // Apply bindings for each field in this segment
+    for (const [fieldKey, fieldValue] of Object.entries(segmentFields)) {
+      addBindingToElement(fieldValue, segment);
+    }
   }
 };
-const addBindingToElement = field => {
-  const element = document.querySelector(field.bind);
-  if (!element) {
-    console.warn(`Flux: Cannot find element for: ${field.key}`, field);
+const addBindingToElement = (field, segment) => {
+  // Build scoped query selector
+  const querySelectorParts = [];
+  if (segment.owner) {
+    querySelectorParts.push(`${segment.owner}`);
   }
-  element?.setAttribute(`fx-key`, field.key);
-  element?.setAttribute(`fx-type`, field.type);
+  querySelectorParts.push(field.bind);
+  const querySelectorPath = querySelectorParts.join(' ');
+  const element = document.querySelector(querySelectorPath);
+  if (!element) {
+    console.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
+    return;
+  }
+  element.setAttribute(`fx-key`, field.key);
+  element.setAttribute(`fx-type`, field.type);
+  if (segment.owner) {
+    element.setAttribute(`fx-owner`, segment.owner);
+  }
 };
 /**
  * Applies the returned HTML to the document
@@ -136,7 +169,7 @@ const updateElement = fluxBroadCastMessage => {
     // Use Idiomorph to morph the entire document
     idiomorph_1.default.morph(document.documentElement, newDoc.documentElement, {
       head: {
-        style: 'morph' // Morph style tags in the head
+        style: 'morph'
       },
       callbacks: {
         beforeNodeMorphed: (oldNode, newNode) => {
@@ -150,12 +183,20 @@ const updateElement = fluxBroadCastMessage => {
     });
     console.log('Document morphed successfully');
     console.timeEnd('morph');
-    addElementBindings();
+    addBindingsToSegments();
     return;
   }
   // Handle individual field updates (textUpdate)
   if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-    const element = document.querySelector(`[fx-key="${fluxBroadCastMessage.key}"]`);
+    console.log(fluxBroadCastMessage);
+    const querySelectorParts = [];
+    if (fluxBroadCastMessage.owner) {
+      querySelectorParts.push(`${fluxBroadCastMessage.owner}`);
+    }
+    querySelectorParts.push(`[fx-key="${fluxBroadCastMessage.key}"]`);
+    const querySelectorPath = querySelectorParts.join(' ');
+    console.log(querySelectorPath);
+    const element = document.querySelector(querySelectorPath);
     if (!element) {
       console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
       return;
@@ -1620,6 +1661,12 @@ module.exports = Idiomorph;
 /******/ 		var cachedModule = __webpack_module_cache__[moduleId];
 /******/ 		if (cachedModule !== undefined) {
 /******/ 			return cachedModule.exports;
+/******/ 		}
+/******/ 		// Check if module exists (development only)
+/******/ 		if (__webpack_modules__[moduleId] === undefined) {
+/******/ 			var e = new Error("Cannot find module '" + moduleId + "'");
+/******/ 			e.code = 'MODULE_NOT_FOUND';
+/******/ 			throw e;
 /******/ 		}
 /******/ 		// Create a new module (and put it into the cache)
 /******/ 		var module = __webpack_module_cache__[moduleId] = {

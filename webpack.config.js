@@ -6,6 +6,7 @@ const {
 
 const PATHS = {
   ROOT: Path.resolve(),
+  styles: Path.resolve('client/styles'),
   cms: Path.resolve('client/cms-live-updates'),
   core: Path.resolve('client/core'),
   bind: Path.resolve('client/bind'),
@@ -42,6 +43,11 @@ const config = [
 
     return frontendConfig;
   })(),
+  new CssWebpackConfig('css', PATHS)
+    .setEntry({
+      bundle: `${PATHS.styles}/index.scss`,
+    })
+    .getConfig(),
 ];
 
 // Use WEBPACK_CHILD=js or WEBPACK_CHILD=css env var to run a single config

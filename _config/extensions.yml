@@ -1,3 +1,20 @@
 SilverStripe\Admin\LeftAndMain:
+  extra_requirements_css:
+    - 'dannidickson/flux: client/dist/styles/bundle.css'
   extensions:
-    - Flux\Extension\FluxLeftAndMainExtension
+    FluxLeftAndMainExtension: Flux\Extension\FluxLeftAndMainExtension
+
+SilverStripe\ORM\DataObject:
+  extensions:
+    FluxDataObjectExtension: Flux\Extension\FluxDataObjectExtension
+
+---
+Name: flux-base-element-extensions
+Only:
+  classexists: 'DNADesign\Elemental\Models\BaseElement'
+---
+DNADesign\Elemental\Models\BaseElement:
+  extensions:
+    FluxBaseElementExtension: Flux\Extension\FluxBaseElementExtension
+
+

@@ -2,6 +2,8 @@
 
 namespace Flux\Repository;
 
+use SilverStripe\ORM\DataObject;
+
 class FluxRepository
 {
     /**
@@ -46,6 +48,51 @@ class FluxRepository
         if (str_contains($type, "")) {
             return "Text";
         }
+    }
+
+    public static function getFluxFieldConfig(DataObject $dataObject): array|bool
+    {
+        $dataObjectId = $dataObject->ID;
+        $config = $dataObject->config();
+        $pageData = $dataObject->data();
+        $fluxFields = $config->get("flux_fields");
+
+        // @ingore
+        $fluxEvents = $config->get("flux_events");
+
+        if (!$fluxFields) {
+        return false;
+        }
+
+        $fluxConfig = [
+            "ID" => $dataObjectId,
+            "ClassName" => get_class($dataObject),
+            "Fields" => [],
+            "Events" => [],
+            "Keys" => [],
+        ];
+
+        $fluxConfigFleids = [];
+        $fluxFieldsKeys = [];
+        foreach ($fluxFields as $key => $value) {
+            $fluxType = FluxRepository::getFluxDataType($key, $config);
+
+            if (!$fluxType) {
+                continue;
+            }
+
+            $fluxFieldsKeys[] = $key;
+            $fluxConfigFleids[$key] = [
+                'key' => $key,
+                'bind' => $value,
+                'type' => $fluxType,
+            ];
+
+            $fluxConfig['Fields'] = $fluxConfigFleids;
+            $fluxConfig['Keys'] = $fluxFieldsKeys;
+        }
+
+        return $fluxConfig;
     }
 
     /**

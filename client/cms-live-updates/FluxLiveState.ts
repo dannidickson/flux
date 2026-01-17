@@ -10,42 +10,102 @@ interface FluxFieldState {
     key: string;
     value: any;
     type?: string;
+    owner?: string;
+    segmentType: 'Page' | 'Element';
+    className: string;
+    segmentID: string | number;
+    updatedAt: number;
+}
+
+interface FluxConfigSegment {
+    Type: 'Page' | 'Element';
+    ClassName: string;
+    ID: string | number;
+    owner?: string;
+}
+
+interface FluxConfigStructure {
+    Segments: FluxConfigSegment[];
+    ChangeSet: Record<string, Record<string, any>>;
+    Events: any[];
 }
 
 class FluxLiveState {
     private isLiveStateActive: boolean = true;
-    private fields: Map<string, any>;
+    private fields: Map<string, FluxFieldState>;
     private pageID: number | null;
     private className: string | null;
+    private segments: FluxConfigSegment[];
+    private objects: Map<string, {}>;
 
     constructor() {
         this.fields = new Map();
         this.pageID = null;
         this.className = null;
-        this.initializeFromFluxLiveConfig();
+        this.segments = [];
+        this.objects = new Map();
+        this.initializeFromFluxConfig();
     }
 
     /**
      * Initialize state from global FluxConfig
+     * Segments is now a flat array
      */
-    private initializeFromFluxLiveConfig(): void {
-        if (typeof window !== 'undefined' && (window as any).FluxLiveConfig) {
-            const config = (window as any).FluxLiveConfig;
-            this.pageID = config.DataObjectID || null;
-            this.className = config.ClassName || null;
+    private initializeFromFluxConfig(): void {
+        if (typeof window !== 'undefined' && (window as any).FluxConfig) {
+            const config: FluxConfigStructure = (window as any).FluxConfig;
+            this.segments = config.Segments || [];
+
+            // Find the Page segment
+            const pageSegment = this.segments.find(s => s.Type === 'Page');
+            if (pageSegment) {
+                this.pageID = pageSegment.ID ? Number(pageSegment.ID) : null;
+                this.className = pageSegment.ClassName || null;
+            }
         }
     }
 
     /**
      * Update a field's value in the state
+     * Now includes segment ownership information
      */
-    public updateField(key: string, value: any, type?: string): void {
+    public updateField(
+        key: string,
+        value: any,
+        options?: {
+            type?: string,
+            owner?: string,
+            segmentType?: 'Page' | 'Element',
+            className?: string,
+            segmentID?: string | number
+        }
+    ): void {
+        // Find the segment this field belongs to
+        let segment: FluxConfigSegment | undefined;
+
+        if (options?.owner) {
+            // Find segment by owner
+            segment = this.segments.find(s => s.owner === options.owner);
+        } else {
+            // Default to Page segment
+            segment = this.segments.find(s => s.Type === 'Page');
+        }
+
         this.fields.set(key, {
             key,
             value,
-            type,
+            type: options?.type,
+            owner: options?.owner || segment?.owner,
+            segmentType: options?.segmentType || segment?.Type || 'Page',
+            className: options?.className || segment?.ClassName || '',
+            segmentID: options?.segmentID || segment?.ID || '',
             updatedAt: Date.now()
         });
+
+        if (process.env.NODE_ENV === 'development') {
+            // @ts-ignore
+            window.FluxLiveState = this; // Expose for debugging
+        }
     }
 
     /**
@@ -68,6 +128,32 @@ class FluxLiveState {
     }
 
     /**
+     * Get changed fields grouped by segment
+     * Returns a structure that maps owner -> fields
+     */
+    public getChangedFieldsBySegment(): Record<string, any> {
+        const segmentChanges: Record<string, any> = {};
+
+        this.fields.forEach((fieldData) => {
+            const segmentKey = fieldData.owner || 'Page';
+
+            if (!segmentChanges[segmentKey]) {
+                segmentChanges[segmentKey] = {
+                    segmentType: fieldData.segmentType,
+                    className: fieldData.className,
+                    segmentID: fieldData.segmentID,
+                    owner: fieldData.owner,
+                    fields: {}
+                };
+            }
+
+            segmentChanges[segmentKey].fields[fieldData.key] = fieldData.value;
+        });
+
+        return segmentChanges;
+    }
+
+    /**
      * Clear all changed fields
      */
     public clear(): void {
@@ -76,13 +162,30 @@ class FluxLiveState {
 
     /**
      * Get the state as JSON for sending to the server
+     * Includes segment ownership information
      */
     public toJSON(): object {
         return {
             pageID: this.pageID,
             className: this.className,
-            fields: this.getChangedFields()
+            segments: this.segments,
+            fields: this.getChangedFields(),
+            segmentChanges: this.getChangedFieldsBySegment()
         };
+    }
+
+    /**
+     * Get the segments array
+     */
+    public getSegments(): FluxConfigSegment[] {
+        return this.segments;
+    }
+
+    /**
+     * Get only Element segments
+     */
+    public getElements(): FluxConfigSegment[] {
+        return this.segments.filter(s => s.Type === 'Element');
     }
 
     /**
@@ -135,6 +238,19 @@ class FluxLiveState {
         return this.isLiveStateActive;
     }
 
+
+    public addToObject(key: string): void
+    {
+        this.objects.set(key, {
+            key: key,
+            type: 'object',
+        });
+    }
+
+    public getObjects(): Map<string, {}> {
+        return this.objects;
+    }
+
     /**
      * Get debug information
      */
@@ -142,6 +258,7 @@ class FluxLiveState {
         logger.log('FluxLiveState:', {
             pageID: this.pageID,
             className: this.className,
+            segments: this.segments,
             fields: this.getChangedFields(),
             fieldCount: this.fields.size,
             isLiveStateActive: this.isLiveStateActive,

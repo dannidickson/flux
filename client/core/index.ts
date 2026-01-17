@@ -7,10 +7,15 @@
 
 declare global {
     interface Window {
-        FluxConfig: {
-            id: number;
-            Fields: [],
-            Events: [],
+        FluxConfig?: {
+            Segments: Array<{
+                Type: 'Page' | 'Element';
+                ID: string | number;
+                ClassName: string;
+                owner?: string;
+            }>;
+            ChangeSet: Record<string, Record<string, any>>;
+            Events: any[];
         };
     }
 }
