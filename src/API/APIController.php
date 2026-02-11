@@ -15,25 +15,10 @@ use SilverStripe\Versioned\Versioned;
 class APIController extends Controller
 {
     private static array $allowed_actions = [
-        "getContent",
-        "templateUpdate"
+        "pageTemplateUpdate",
+        'blockUpdate',
+        'shortCodesFragmentPatch'
     ];
-
-    /**
-     * @TODO this was just an experiment for what a livewire component like system might look like.
-     */
-    public function getContent(HTTPRequest $request): HTTPResponse
-    {
-        $html = '<div class="page__content">More content here</div>';
-
-        $dataToSend = [
-            "html" => $html,
-        ];
-
-        return HTTPResponse::create(json_encode($dataToSend))
-            ->addHeader("X-Flux-HTML", true)
-            ->addHeader("X-Flux-Trusted", true);
-    }
 
     /**
      * Gets the DataObject and renders the template.
@@ -43,7 +28,7 @@ class APIController extends Controller
      *
      * @see FluxLiveState
      */
-    public function templateUpdate(HTTPRequest $request): HTTPResponse
+    public function pageTemplateUpdate(HTTPRequest $request): HTTPResponse
     {
         return Versioned::withVersionedMode(function () use ($request) {
             Versioned::set_stage(Versioned::DRAFT);
@@ -122,6 +107,71 @@ class APIController extends Controller
         });
     }
 
+    public function blockUpdate(HTTPRequest $request): HTTPResponse
+    {
+        return Versioned::withVersionedMode(function () use ($request) {
+            Versioned::set_stage(Versioned::DRAFT);
+
+            $pageID = $request->getVar('pageID');
+            $owner = $request->getVar('owner');
+
+            if (!$pageID || !$owner) {
+                return HTTPResponse::create(json_encode(['error' => 'pageID and owner are required']), 400)
+                    ->addHeader('Content-Type', 'application/json');
+            }
+
+            $body = json_decode($request->getBody(), true);
+
+            $segmentID = $body['segmentID'] ?? null;
+            $segmentClassName = $body['segmentClassName'] ?? null;
+            $fields = $body['fields'] ?? [];
+
+            if (!$segmentID || !$segmentClassName) {
+                return HTTPResponse::create(json_encode(['error' => 'segmentID and segmentClassName are required']), 400)
+                    ->addHeader('Content-Type', 'application/json');
+            }
+
+            $element = DataObject::get_by_id($segmentClassName, $segmentID);
+
+            if (!$element) {
+                return HTTPResponse::create(json_encode(['error' => 'Element not found']), 404)
+                    ->addHeader('Content-Type', 'application/json');
+            }
+
+            // Apply field changes BEFORE rendering
+            foreach ($fields as $fieldName => $value) {
+                if ($element->hasField($fieldName)) {
+                    $element->$fieldName = $value;
+                }
+            }
+
+            $html = $element->forTemplate();
+
+            // @todo add proper validation for 'Trusted'
+            $isTrusted = true;
+
+            $response = [
+                'pageID' => $pageID,
+                'owner' => $owner,
+                'segmentID' => $segmentID,
+                'html' => $html,
+                'trusted' => $isTrusted,
+            ];
+
+            return HTTPResponse::create(json_encode($response))
+                ->addHeader("X-Flux-HTML", true)
+                ->addHeader("X-Flux-Trusted", $isTrusted ? "true" : "false")
+                ->addHeader('Content-Type', 'application/json');
+        });
+    }
+
+    public function shortCodesFragmentPatch(HTTPRequest $request): HTTPResponse
+    {
+        // Placeholder for future block update logic
+        return HTTPResponse::create(json_encode(['status' => 'Not implemented']), 501)
+            ->addHeader('Content-Type', 'application/json');
+    }
+
     /**
      * Render a specific segment (e.g., just a CTA element)
      *
@@ -132,6 +182,7 @@ class APIController extends Controller
     {
         $segmentID = $segmentData['segmentID'] ?? null;
         $segmentClassName = $segmentData['className'] ?? null;
+        $fields = $segmentData['fields'] ?? [];
 
         if (!$segmentID || !$segmentClassName) {
             return '';
@@ -141,6 +192,13 @@ class APIController extends Controller
 
         if (!$dataObject) {
             return '';
+        }
+
+        // Apply field changes before rendering (fixes re-fetch losing in-memory changes)
+        foreach ($fields as $fieldName => $value) {
+            if ($dataObject->hasField($fieldName)) {
+                $dataObject->$fieldName = $value;
+            }
         }
 
         // Render just this segment

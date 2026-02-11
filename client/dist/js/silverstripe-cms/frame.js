@@ -81,12 +81,13 @@ Object.defineProperty(exports, "__esModule", ({
 const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../bind/FrameChannel */ "./client/bind/FrameChannel.ts"));
 // @ts-ignore
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
+const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const frame = new FrameChannel_1.default();
 frame.onRecievedMessage = event => {
   const messageType = event.data.type;
   if (messageType === 'configUpdate') {
     window.FluxConfig = event.data.config;
-    console.log('FluxConfig received from host:', window.FluxConfig);
+    logger_1.logger.log('FluxConfig received from host:', window.FluxConfig);
     addBindingsToSegments();
     return;
   }
@@ -108,14 +109,14 @@ const addBindingsToSegments = () => {
     ChangeSet
   } = window.FluxConfig;
   if (!Segments || !ChangeSet) return;
-  console.log('Segments:', Segments);
-  console.log('ChangeSet:', ChangeSet);
+  logger_1.logger.log('Segments:', Segments);
+  logger_1.logger.log('ChangeSet:', ChangeSet);
   // Loop through flat segments array
   for (const segment of Segments) {
     // Look up fields for this segment by ClassName
     const segmentFields = ChangeSet[segment.ClassName];
     if (!segmentFields) {
-      console.log(`No fields found for ${segment.ClassName}`);
+      logger_1.logger.log(`No fields found for ${segment.ClassName}`);
       continue;
     }
     // Apply bindings for each field in this segment
@@ -134,7 +135,7 @@ const addBindingToElement = (field, segment) => {
   const querySelectorPath = querySelectorParts.join(' ');
   const element = document.querySelector(querySelectorPath);
   if (!element) {
-    console.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
+    logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
     return;
   }
   element.setAttribute(`fx-key`, field.key);
@@ -154,15 +155,15 @@ const addBindingToElement = (field, segment) => {
  * @returns
  */
 const updateElement = fluxBroadCastMessage => {
-  console.log('Flux message received:', fluxBroadCastMessage);
+  logger_1.logger.log('Flux message received:', fluxBroadCastMessage);
   // Handle full template updates
-  if (fluxBroadCastMessage.type === "templateUpdate") {
+  if (fluxBroadCastMessage.type === "pageTemplateUpdate") {
     if (!fluxBroadCastMessage.html) {
-      console.error('templateUpdate received but no HTML provided');
+      logger_1.logger.error('pageTemplateUpdate received but no HTML provided');
       return;
     }
-    console.log('Morphing document with new HTML...');
-    console.time('morph');
+    logger_1.logger.log('Morphing document with new HTML...');
+    logger_1.logger.time('morph');
     // Parse the HTML to remove doctype and extract just the <html> element
     const parser = new DOMParser();
     const newDoc = parser.parseFromString(fluxBroadCastMessage.html, 'text/html');
@@ -181,32 +182,60 @@ const updateElement = fluxBroadCastMessage => {
         }
       }
     });
-    console.log('Document morphed successfully');
-    console.timeEnd('morph');
+    logger_1.logger.log('Document morphed successfully');
+    logger_1.logger.timeEnd('morph');
+    addBindingsToSegments();
+    return;
+  }
+  if (fluxBroadCastMessage.type === "blockUpdate") {
+    if (!fluxBroadCastMessage.html || !fluxBroadCastMessage.targetOwner) {
+      logger_1.logger.error('blockUpdate received but missing html or targetOwner');
+      return;
+    }
+    const ownerElement = document.querySelector(fluxBroadCastMessage.targetOwner);
+    if (!ownerElement) {
+      logger_1.logger.warn(`Block owner element not found: ${fluxBroadCastMessage.targetOwner}`);
+      return;
+    }
+    logger_1.logger.log(`Morphing block: ${fluxBroadCastMessage.targetOwner}`);
+    logger_1.logger.time('blockMorph');
+    idiomorph_1.default.morph(ownerElement, fluxBroadCastMessage.html, {
+      morphStyle: 'innerHTML',
+      callbacks: {
+        beforeNodeMorphed: (oldNode, newNode) => {
+          if (oldNode.tagName === 'SCRIPT') {
+            return false;
+          }
+          return true;
+        }
+      }
+    });
+    logger_1.logger.log('Block morphed successfully');
+    logger_1.logger.timeEnd('blockMorph');
     addBindingsToSegments();
     return;
   }
   // Handle individual field updates (textUpdate)
   if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-    console.log(fluxBroadCastMessage);
+    logger_1.logger.log(fluxBroadCastMessage);
     const querySelectorParts = [];
     if (fluxBroadCastMessage.owner) {
       querySelectorParts.push(`${fluxBroadCastMessage.owner}`);
     }
     querySelectorParts.push(`[fx-key="${fluxBroadCastMessage.key}"]`);
     const querySelectorPath = querySelectorParts.join(' ');
-    console.log(querySelectorPath);
+    logger_1.logger.log(querySelectorPath);
     const element = document.querySelector(querySelectorPath);
     if (!element) {
-      console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
+      logger_1.logger.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
       return;
     }
     // @ts-ignore
     element.innerHTML = fluxBroadCastMessage.value;
-    console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
+    logger_1.logger.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
     return;
   }
-  console.warn('Unknown message type or missing data:', fluxBroadCastMessage);
+  logger_1.logger.warn('Unknown message type or missing data:', fluxBroadCastMessage);
 };
 
 /***/ }),
@@ -1661,12 +1690,6 @@ module.exports = Idiomorph;
 /******/ 		var cachedModule = __webpack_module_cache__[moduleId];
 /******/ 		if (cachedModule !== undefined) {
 /******/ 			return cachedModule.exports;
-/******/ 		}
-/******/ 		// Check if module exists (development only)
-/******/ 		if (__webpack_modules__[moduleId] === undefined) {
-/******/ 			var e = new Error("Cannot find module '" + moduleId + "'");
-/******/ 			e.code = 'MODULE_NOT_FOUND';
-/******/ 			throw e;
 /******/ 		}
 /******/ 		// Create a new module (and put it into the cache)
 /******/ 		var module = __webpack_module_cache__[moduleId] = {

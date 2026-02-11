@@ -13,6 +13,7 @@ interface FluxBroadCastMessage {
     owner?: string | null;
     changedFields?: Record<string, any>;
     targetKey?: string;
+    targetOwner?: string;
 }
 
 

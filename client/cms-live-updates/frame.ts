@@ -2,7 +2,6 @@ import FrameChannel from "../bind/FrameChannel";
 // @ts-ignore
 import Idiomorph from "idiomorph";
 import { logger } from "../core/logger";
-import FluxLiveState from "./FluxLiveState";
 
 declare global {
     interface Window {
@@ -29,7 +28,7 @@ frame.onRecievedMessage = (event) => {
 
     if (messageType === 'configUpdate') {
         window.FluxConfig = event.data.config;
-        console.log('FluxConfig received from host:', window.FluxConfig);
+        logger.log('FluxConfig received from host:', window.FluxConfig);
 
         addBindingsToSegments();
         return;
@@ -55,8 +54,8 @@ const addBindingsToSegments = () => {
 
     if (!Segments || !ChangeSet) return;
 
-    console.log('Segments:', Segments);
-    console.log('ChangeSet:', ChangeSet);
+    logger.log('Segments:', Segments);
+    logger.log('ChangeSet:', ChangeSet);
 
     // Loop through flat segments array
     for (const segment of Segments) {
@@ -64,7 +63,7 @@ const addBindingsToSegments = () => {
         const segmentFields = ChangeSet[segment.ClassName];
 
         if (!segmentFields) {
-            console.log(`No fields found for ${segment.ClassName}`);
+            logger.log(`No fields found for ${segment.ClassName}`);
             continue;
         }
 
@@ -89,7 +88,7 @@ const addBindingToElement = (field: any, segment: any) => {
     const element = document.querySelector(querySelectorPath);
 
     if (!element) {
-        console.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
+        logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
         return;
     }
 
@@ -112,16 +111,16 @@ const addBindingToElement = (field: any, segment: any) => {
  * @returns
  */
 const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
-    console.log('Flux message received:', fluxBroadCastMessage);
+    logger.log('Flux message received:', fluxBroadCastMessage);
     // Handle full template updates
-    if (fluxBroadCastMessage.type === "templateUpdate") {
+    if (fluxBroadCastMessage.type === "pageTemplateUpdate") {
         if (!fluxBroadCastMessage.html) {
-            console.error('templateUpdate received but no HTML provided');
+            logger.error('pageTemplateUpdate received but no HTML provided');
             return;
         }
 
-        console.log('Morphing document with new HTML...');
-        console.time('morph');
+        logger.log('Morphing document with new HTML...');
+        logger.time('morph');
 
         // Parse the HTML to remove doctype and extract just the <html> element
         const parser = new DOMParser();
@@ -143,8 +142,43 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
             }
         });
 
-        console.log('Document morphed successfully');
-        console.timeEnd('morph');
+        logger.log('Document morphed successfully');
+        logger.timeEnd('morph');
+
+        addBindingsToSegments();
+        return;
+    }
+
+    if (fluxBroadCastMessage.type === "blockUpdate") {
+        if (!fluxBroadCastMessage.html || !fluxBroadCastMessage.targetOwner) {
+            logger.error('blockUpdate received but missing html or targetOwner');
+            return;
+        }
+
+        const ownerElement = document.querySelector(fluxBroadCastMessage.targetOwner);
+
+        if (!ownerElement) {
+            logger.warn(`Block owner element not found: ${fluxBroadCastMessage.targetOwner}`);
+            return;
+        }
+
+        logger.log(`Morphing block: ${fluxBroadCastMessage.targetOwner}`);
+        logger.time('blockMorph');
+
+        Idiomorph.morph(ownerElement, fluxBroadCastMessage.html, {
+            morphStyle: 'innerHTML',
+            callbacks: {
+                beforeNodeMorphed: (oldNode: any, newNode: any) => {
+                    if (oldNode.tagName === 'SCRIPT') {
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        });
+
+        logger.log('Block morphed successfully');
+        logger.timeEnd('blockMorph');
 
         addBindingsToSegments();
         return;
@@ -152,7 +186,7 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
 
     // Handle individual field updates (textUpdate)
     if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-        console.log(fluxBroadCastMessage);
+        logger.log(fluxBroadCastMessage);
 
         const querySelectorParts = [];
 
@@ -164,20 +198,20 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
 
         const querySelectorPath = querySelectorParts.join(' ');
 
-        console.log(querySelectorPath);
+        logger.log(querySelectorPath);
 
         const element = document.querySelector(querySelectorPath);
 
         if (!element) {
-            console.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
+            logger.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
             return;
         }
 
         // @ts-ignore
         element.innerHTML = fluxBroadCastMessage.value;
-        console.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
+        logger.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
         return;
     }
 
-    console.warn('Unknown message type or missing data:', fluxBroadCastMessage);
+    logger.warn('Unknown message type or missing data:', fluxBroadCastMessage);
 }

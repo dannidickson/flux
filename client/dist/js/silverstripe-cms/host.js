@@ -220,11 +220,12 @@ class FluxLiveState {
    */
   async sendUpdate(apiEndpoint) {
     const state = this.toJSON();
+    console.log('state', state);
     if (this.pageID === null) {
       throw new Error(`Missing page id`);
     }
     ;
-    const url = `${apiEndpoint}/templateUpdate?pageID=${this.pageID}`;
+    const url = `${apiEndpoint}/pageTemplateUpdate?pageID=${this.pageID}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -237,6 +238,40 @@ class FluxLiveState {
     }
     const data = await response.json();
     return data;
+  }
+  /**
+   * Send a block-scoped update for a specific segment owner
+   */
+  async sendBlockUpdate(apiEndpoint, owner) {
+    const segmentChanges = this.getChangedFieldsBySegment();
+    const segment = segmentChanges[owner];
+    if (!segment) {
+      throw new Error(`No segment changes found for owner: ${owner}`);
+    }
+    if (this.pageID === null) {
+      throw new Error(`Missing page id`);
+    }
+    const payload = {
+      pageID: this.pageID,
+      className: this.className,
+      owner: owner,
+      segmentType: segment.segmentType,
+      segmentClassName: segment.className,
+      segmentID: segment.segmentID,
+      fields: segment.fields
+    };
+    const url = `${apiEndpoint}/blockUpdate?pageID=${this.pageID}&owner=${encodeURIComponent(owner)}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`Block update failed: ${response.statusText}`);
+    }
+    return response.json();
   }
   /**
    * Set the page ID
@@ -324,8 +359,7 @@ let lastCallTime = 0;
  * @param cooldownMs
  * @returns
  */
-async function sendTemplateUpdate(hostChannel, fluxState, cooldownMs = 5000 // 5 seconds default
-) {
+async function sendPageTemplateUpdate(hostChannel, fluxState, cooldownMs = 500) {
   const now = Date.now();
   if (now - lastCallTime < cooldownMs) {
     logger_1.logger.log("Still in cooldown, skipping update");
@@ -339,7 +373,7 @@ async function sendTemplateUpdate(hostChannel, fluxState, cooldownMs = 5000 // 5
       console.warn("Source HTML returned unsafe html");
     }
     hostChannel.broadcastMessage({
-      type: 'templateUpdate',
+      type: "pageTemplateUpdate",
       html: response.html,
       changedFields: response.changedFields
     });
@@ -347,6 +381,32 @@ async function sendTemplateUpdate(hostChannel, fluxState, cooldownMs = 5000 // 5
   } catch (error) {
     console.error("Template update failed:", error);
     throw error;
+  }
+}
+const blockCooldowns = new Map();
+async function sendBlockUpdate(hostChannel, fluxState, owner, cooldownMs = 500) {
+  const now = Date.now();
+  const lastCall = blockCooldowns.get(owner) || 0;
+  if (now - lastCall < cooldownMs) {
+    logger_1.logger.log(`Block cooldown active for ${owner}, skipping`);
+    return;
+  }
+  blockCooldowns.set(owner, now);
+  try {
+    const response = await fluxState.sendBlockUpdate(API_ENDPOINT, owner);
+    if (!response.trusted) {
+      console.warn("Block update returned unsafe html");
+    }
+    console.log(`Morphing block: ${owner}`);
+    hostChannel.broadcastMessage({
+      type: "blockUpdate",
+      html: response.html,
+      targetOwner: owner
+    });
+    return response;
+  } catch (error) {
+    console.warn("Block update failed, falling back to full page update:", error);
+    sendPageTemplateUpdate(hostChannel, fluxState);
   }
 }
 window.addEventListener("load", function () {
@@ -359,7 +419,7 @@ window.addEventListener("load", function () {
   const sendFluxConfigToIframe = () => {
     if (window.FluxConfig) {
       hostChannel.broadcastMessage({
-        type: 'configUpdate',
+        type: "configUpdate",
         config: window.FluxConfig
       });
     }
@@ -367,22 +427,22 @@ window.addEventListener("load", function () {
   // Send config when iframe loads
   const iframe = document.querySelector(CMS_FRAME);
   if (iframe) {
-    iframe.addEventListener('load', sendFluxConfigToIframe);
+    iframe.addEventListener("load", sendFluxConfigToIframe);
   }
   // Watch for split mode changes
-  const cmsContainer = document.querySelector('.cms-container');
+  const cmsContainer = document.querySelector(".cms-container");
   if (cmsContainer) {
     // Track previous split mode state to detect transitions
-    let wasSplitMode = cmsContainer.classList.contains('cms-container--split-mode');
+    let wasSplitMode = cmsContainer.classList.contains("cms-container--split-mode");
     // Set initial state without triggering update
     if (wasSplitMode) {
       fluxState.setLiveStateActive(true);
     }
     const observer = new MutationObserver(mutations => {
       mutations.forEach(mutation => {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+        if (mutation.type === "attributes" && mutation.attributeName === "class") {
           let target = mutation.target;
-          const isSplitMode = target.classList.contains('cms-container--split-mode');
+          const isSplitMode = target.classList.contains("cms-container--split-mode");
           // Only trigger update when transitioning TO split mode, not when already in it
           if (isSplitMode && !wasSplitMode) {
             fluxState.setLiveStateActive(true);
@@ -390,7 +450,7 @@ window.addEventListener("load", function () {
             sendFluxConfigToIframe();
             // Only send template update if there are field changes
             if (fluxState.getChangedFields() && Object.keys(fluxState.getChangedFields()).length > 0) {
-              sendTemplateUpdate(hostChannel, fluxState);
+              sendPageTemplateUpdate(hostChannel, fluxState);
             }
           } else if (!isSplitMode && wasSplitMode) {
             fluxState.setLiveStateActive(false);
@@ -401,7 +461,7 @@ window.addEventListener("load", function () {
     });
     observer.observe(cmsContainer, {
       attributes: true,
-      attributeFilter: ['class']
+      attributeFilter: ["class"]
     });
   }
   // Watch for modal-open class on body element
@@ -409,15 +469,15 @@ window.addEventListener("load", function () {
   if (bodyElement) {
     const bodyObserver = new MutationObserver(mutations => {
       mutations.forEach(mutation => {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          const hasModalOpen = bodyElement.classList.contains('modal-open');
+        if (mutation.type === "attributes" && mutation.attributeName === "class") {
+          const hasModalOpen = bodyElement.classList.contains("modal-open");
           if (hasModalOpen) {
-            console.log('Modal opened');
+            console.log("Modal opened");
             console.log(fluxState);
           } else {
             this.setTimeout(() => {
-              console.log('Modal closed');
-              sendTemplateUpdate(hostChannel, fluxState);
+              console.log("Modal closed");
+              sendPageTemplateUpdate(hostChannel, fluxState);
             }, 500);
           }
         }
@@ -425,7 +485,7 @@ window.addEventListener("load", function () {
     });
     bodyObserver.observe(bodyElement, {
       attributes: true,
-      attributeFilter: ['class']
+      attributeFilter: ["class"]
     });
   }
   entwine("flux", function ($) {
@@ -462,7 +522,7 @@ window.addEventListener("load", function () {
             if (!proxiedElement) {
               return;
             }
-            const currentValue = proxiedElement.value || proxiedElement.getAttribute('value') || '';
+            const currentValue = proxiedElement.value || proxiedElement.getAttribute("value") || "";
             if (isFirstRun) {
               previousValue = currentValue;
               isFirstRun = false;
@@ -473,7 +533,7 @@ window.addEventListener("load", function () {
               fluxState.updateField(bindKey, currentValue, {
                 owner: owner
               });
-              sendTemplateUpdate(hostChannel, fluxState);
+              owner ? sendBlockUpdate(hostChannel, fluxState, owner) : sendPageTemplateUpdate(hostChannel, fluxState);
             }
           });
           observer.observe(element, {
@@ -490,12 +550,12 @@ window.addEventListener("load", function () {
           var editor = tinymce.get(element.id);
           if (editor) {
             editor.on("keyup", function () {
-              document.querySelector('.flux-refresh__button').classList.toggle('hidden', false);
+              document.querySelector(".flux-refresh__button").classList.toggle("hidden", false);
               // @TODO this is a good case for a 'patchUpdate'
               // where instead of generating the entire HTML, it sends a patch to the specific binding key
               // This would handle
               hostChannel.broadcastMessage({
-                type: 'textUpdate',
+                type: "textUpdate",
                 key: bindKey,
                 owner: owner,
                 event: bindEvent,
@@ -508,17 +568,17 @@ window.addEventListener("load", function () {
           let event, value, type;
           if (bindEvent === "keyup") {
             value = listenerEvent.target.value;
-            if (element.getAttribute('fx-event-type') === 'templateUpdate') {
-              type = 'HTML';
-            } else if (value.length < 1) type = 'HTML';else type = 'Text';
+            if (element.getAttribute("fx-event-type") === "templateUpdate") {
+              type = "HTML";
+            } else if (value.length < 1) type = "HTML";else type = "Text";
           }
           if (bindEvent === "click") {
             value = listenerEvent.target.checked;
-            type = 'HTML';
+            type = "HTML";
           }
           if (bindEvent === "change") {
             value = listenerEvent.target.value || listenerEvent.target.checked;
-            type = 'HTML';
+            type = "HTML";
           }
           fluxState.updateField(bindKey, value, {
             type: type,
@@ -527,9 +587,9 @@ window.addEventListener("load", function () {
           if (!fluxState.getIsActive()) {
             return;
           }
-          if (type === 'Text') {
+          if (type === "Text") {
             hostChannel.broadcastMessage({
-              type: 'textUpdate',
+              type: "textUpdate",
               key: bindKey,
               owner: owner,
               event: bindEvent,
@@ -537,7 +597,46 @@ window.addEventListener("load", function () {
             });
             return;
           }
-          sendTemplateUpdate(hostChannel, fluxState);
+          if (owner) {
+            sendBlockUpdate(hostChannel, fluxState, owner);
+          } else {
+            sendPageTemplateUpdate(hostChannel, fluxState);
+          }
+        });
+      }
+    });
+    $("[fx-proxy]").entwine({
+      onmatch: function (event) {
+        var self = $(this);
+        let proxiedElement = self[0];
+        console.log(proxiedElement);
+        const parentElement = proxiedElement.closest("[fx-key]");
+        const bindKey = parentElement.getAttribute("fx-key");
+        const bindEvent = parentElement.getAttribute("fx-event");
+        const proxyElement = parentElement.getAttribute("fx-proxy");
+        const owner = parentElement.getAttribute("fx-owner") ?? null;
+        const type = parentElement.getAttribute("fx-type") ?? null;
+        const observer = new MutationObserver(mutations => {
+          if (!proxiedElement) {
+            return;
+          }
+          const currentValue = proxiedElement.value || proxiedElement.getAttribute("value") || "";
+          let previousValue = null;
+          let isFirstRun = false;
+          if (currentValue !== previousValue) {
+            previousValue = currentValue;
+            fluxState.updateField(bindKey, currentValue, {
+              owner: owner
+            });
+            owner ? sendBlockUpdate(hostChannel, fluxState, owner) : sendPageTemplateUpdate(hostChannel, fluxState);
+          }
+        });
+        observer.observe(proxiedElement, {
+          attributes: true,
+          attributeFilter: ["value"],
+          childList: true,
+          subtree: true,
+          characterData: false
         });
       }
     });
@@ -545,8 +644,8 @@ window.addEventListener("load", function () {
       onclick: function (event) {
         var self = $(this);
         let element = self[0];
-        sendTemplateUpdate(hostChannel, fluxState);
-        element.classList.toggle('hidden', true);
+        sendPageTemplateUpdate(hostChannel, fluxState);
+        element.classList.toggle("hidden", true);
       }
     });
   });
@@ -608,12 +707,6 @@ exports.logger = new Logger("development");
 /******/ 		var cachedModule = __webpack_module_cache__[moduleId];
 /******/ 		if (cachedModule !== undefined) {
 /******/ 			return cachedModule.exports;
-/******/ 		}
-/******/ 		// Check if module exists (development only)
-/******/ 		if (__webpack_modules__[moduleId] === undefined) {
-/******/ 			var e = new Error("Cannot find module '" + moduleId + "'");
-/******/ 			e.code = 'MODULE_NOT_FOUND';
-/******/ 			throw e;
 /******/ 		}
 /******/ 		// Create a new module (and put it into the cache)
 /******/ 		var module = __webpack_module_cache__[moduleId] = {

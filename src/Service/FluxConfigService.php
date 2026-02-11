@@ -36,7 +36,7 @@ class FluxConfigService
         $segmentData = [
             'Type' => 'Page',
             'ID' => $page->ID ?? '',
-            'ClassName' => ClassInfo::shortName($page),
+            'ClassName' => get_class($page),
         ];
 
         self::addSegment($segmentData);
@@ -56,7 +56,7 @@ class FluxConfigService
         $segmentData = [
             'Type' => 'Element',
             'ID' => (string) $element->ID,
-            'ClassName' => ClassInfo::shortName($element),
+            'ClassName' => get_class($element),
         ];
 
         // Add owner if available (e.g., for BaseElement anchor)
@@ -115,7 +115,7 @@ class FluxConfigService
             return;
         }
 
-        $className = ClassInfo::shortName($dataObject);
+        $className = get_class($dataObject);
 
         // Initialize array for this class if not exists
         if (!isset(self::$fields[$className])) {

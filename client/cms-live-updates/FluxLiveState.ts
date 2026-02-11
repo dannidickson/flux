@@ -194,11 +194,13 @@ class FluxLiveState {
     public async sendUpdate(apiEndpoint: string): Promise<any> {
         const state = this.toJSON();
 
+        console.log('state', state);
+
         if (this.pageID === null) {
             throw new Error(`Missing page id`);
         };
 
-        const url = `${apiEndpoint}/templateUpdate?pageID=${this.pageID}`;
+        const url = `${apiEndpoint}/pageTemplateUpdate?pageID=${this.pageID}`;
 
         const response = await fetch(url, {
             method: 'POST',
@@ -214,6 +216,48 @@ class FluxLiveState {
 
         const data = await response.json();
         return data;
+    }
+
+    /**
+     * Send a block-scoped update for a specific segment owner
+     */
+    public async sendBlockUpdate(apiEndpoint: string, owner: string): Promise<any> {
+        const segmentChanges = this.getChangedFieldsBySegment();
+        const segment = segmentChanges[owner];
+
+        if (!segment) {
+            throw new Error(`No segment changes found for owner: ${owner}`);
+        }
+
+        if (this.pageID === null) {
+            throw new Error(`Missing page id`);
+        }
+
+        const payload = {
+            pageID: this.pageID,
+            className: this.className,
+            owner: owner,
+            segmentType: segment.segmentType,
+            segmentClassName: segment.className,
+            segmentID: segment.segmentID,
+            fields: segment.fields,
+        };
+
+        const url = `${apiEndpoint}/blockUpdate?pageID=${this.pageID}&owner=${encodeURIComponent(owner)}`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Block update failed: ${response.statusText}`);
+        }
+
+        return response.json();
     }
 
     /**

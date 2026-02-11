@@ -97,7 +97,7 @@ Note this will only apply if you're in the CMS and the frame has the CMSPreview 
 
 ## Known issues
 ### LinkField support
-Currently there is no default support for linkfield as there is no extension point during the `linkForm` creation.
+Currently there is no default support for linkfield
 
 ### HTMLEditorField support
-At the moment HTMLEditorField will send the content via a `textUpdate` which is just for text updates (read more in the how it works section). In a future update I plan to check if the content contains a shortcode `[image src="..."]`, if it does, it will send a `shortCodesFragmentPatch` event that will fire an API request and return the HTML and patch it. This will be debounced like the `templateUpdate` event. When it doesnt include shortcodes it will just be sent as a `textUpdate`
+At the moment HTMLEditorField will send the content via a `textUpdate` which is just for text updates (read more in the how it works section). In a future update I plan to check if the content contains a shortcode `[image src="..."]`, if it does, it will send a `shortCodesFragmentPatch` event that will fire an API request and return the HTML and patch it. This will be debounced like the `pageTemplateUpdate` event. When it doesnt include shortcodes it will just be sent as a `textUpdate`

@@ -26,10 +26,10 @@ let lastCallTime = 0;
  * @param cooldownMs
  * @returns
  */
-async function sendTemplateUpdate(
+async function sendPageTemplateUpdate(
     hostChannel: any,
     fluxState: FluxLiveState,
-    cooldownMs: number = 5000 // 5 seconds default
+    cooldownMs: number = 500,
 ) {
     const now = Date.now();
     if (now - lastCallTime < cooldownMs) {
@@ -47,15 +47,53 @@ async function sendTemplateUpdate(
         }
 
         hostChannel.broadcastMessage({
-            type: 'templateUpdate',
+            type: "pageTemplateUpdate",
             html: response.html,
-            changedFields: response.changedFields
+            changedFields: response.changedFields,
         });
 
         return response;
     } catch (error) {
         console.error("Template update failed:", error);
         throw error;
+    }
+}
+
+const blockCooldowns: Map<string, number> = new Map();
+
+async function sendBlockUpdate(
+    hostChannel: any,
+    fluxState: FluxLiveState,
+    owner: string,
+    cooldownMs: number = 500,
+) {
+    const now = Date.now();
+    const lastCall = blockCooldowns.get(owner) || 0;
+    if (now - lastCall < cooldownMs) {
+        logger.log(`Block cooldown active for ${owner}, skipping`);
+        return;
+    }
+    blockCooldowns.set(owner, now);
+
+    try {
+        const response = await fluxState.sendBlockUpdate(API_ENDPOINT, owner);
+
+        if (!response.trusted) {
+            console.warn("Block update returned unsafe html");
+        }
+
+        console.log(`Morphing block: ${owner}`);
+
+        hostChannel.broadcastMessage({
+            type: "blockUpdate",
+            html: response.html,
+            targetOwner: owner,
+        });
+
+        return response;
+    } catch (error) {
+        console.warn("Block update failed, falling back to full page update:", error);
+        sendPageTemplateUpdate(hostChannel, fluxState);
     }
 }
 
@@ -72,8 +110,8 @@ window.addEventListener("load", function () {
     const sendFluxConfigToIframe = () => {
         if ((window as any).FluxConfig) {
             hostChannel.broadcastMessage({
-                type: 'configUpdate',
-                config: (window as any).FluxConfig
+                type: "configUpdate",
+                config: (window as any).FluxConfig,
             });
         }
     };
@@ -81,14 +119,16 @@ window.addEventListener("load", function () {
     // Send config when iframe loads
     const iframe = document.querySelector(CMS_FRAME) as HTMLIFrameElement;
     if (iframe) {
-        iframe.addEventListener('load', sendFluxConfigToIframe);
+        iframe.addEventListener("load", sendFluxConfigToIframe);
     }
 
     // Watch for split mode changes
-    const cmsContainer = document.querySelector('.cms-container');
+    const cmsContainer = document.querySelector(".cms-container");
     if (cmsContainer) {
         // Track previous split mode state to detect transitions
-        let wasSplitMode = cmsContainer.classList.contains('cms-container--split-mode');
+        let wasSplitMode = cmsContainer.classList.contains(
+            "cms-container--split-mode",
+        );
 
         // Set initial state without triggering update
         if (wasSplitMode) {
@@ -97,9 +137,14 @@ window.addEventListener("load", function () {
 
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
-                if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                if (
+                    mutation.type === "attributes" &&
+                    mutation.attributeName === "class"
+                ) {
                     let target = mutation.target as HTMLElement;
-                    const isSplitMode = target.classList.contains('cms-container--split-mode');
+                    const isSplitMode = target.classList.contains(
+                        "cms-container--split-mode",
+                    );
 
                     // Only trigger update when transitioning TO split mode, not when already in it
                     if (isSplitMode && !wasSplitMode) {
@@ -107,11 +152,13 @@ window.addEventListener("load", function () {
                         // Send config to iframe when entering split mode
                         sendFluxConfigToIframe();
                         // Only send template update if there are field changes
-                        if (fluxState.getChangedFields() && Object.keys(fluxState.getChangedFields()).length > 0) {
-                            sendTemplateUpdate(hostChannel, fluxState);
+                        if (
+                            fluxState.getChangedFields() &&
+                            Object.keys(fluxState.getChangedFields()).length > 0
+                        ) {
+                            sendPageTemplateUpdate(hostChannel, fluxState);
                         }
-                    }
-                    else if (!isSplitMode && wasSplitMode) {
+                    } else if (!isSplitMode && wasSplitMode) {
                         fluxState.setLiveStateActive(false);
                     }
 
@@ -122,7 +169,7 @@ window.addEventListener("load", function () {
 
         observer.observe(cmsContainer, {
             attributes: true,
-            attributeFilter: ['class']
+            attributeFilter: ["class"],
         });
     }
 
@@ -131,16 +178,20 @@ window.addEventListener("load", function () {
     if (bodyElement) {
         const bodyObserver = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
-                if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-                    const hasModalOpen = bodyElement.classList.contains('modal-open');
+                if (
+                    mutation.type === "attributes" &&
+                    mutation.attributeName === "class"
+                ) {
+                    const hasModalOpen =
+                        bodyElement.classList.contains("modal-open");
 
                     if (hasModalOpen) {
-                        console.log('Modal opened');
+                        console.log("Modal opened");
                         console.log(fluxState);
                     } else {
                         this.setTimeout(() => {
-                            console.log('Modal closed');
-                            sendTemplateUpdate(hostChannel, fluxState);
+                            console.log("Modal closed");
+                            sendPageTemplateUpdate(hostChannel, fluxState);
                         }, 500);
                     }
                 }
@@ -149,7 +200,7 @@ window.addEventListener("load", function () {
 
         bodyObserver.observe(bodyElement, {
             attributes: true,
-            attributeFilter: ['class']
+            attributeFilter: ["class"],
         });
     }
 
@@ -167,7 +218,8 @@ window.addEventListener("load", function () {
 
                 // Watch for file upload / react dropdown changes
                 if (proxyElement) {
-                    const proxyElementType = element.getAttribute("fx-proxy-type");
+                    const proxyElementType =
+                        element.getAttribute("fx-proxy-type");
 
                     switch (proxyElementType) {
                         case "document":
@@ -188,13 +240,17 @@ window.addEventListener("load", function () {
                     let isFirstRun = true;
 
                     const observer = new MutationObserver((mutations) => {
-                        const proxiedElement = element.querySelector(proxyElement);
+                        const proxiedElement =
+                            element.querySelector(proxyElement);
 
                         if (!proxiedElement) {
                             return;
                         }
 
-                        const currentValue = proxiedElement.value || proxiedElement.getAttribute('value') || '';
+                        const currentValue =
+                            proxiedElement.value ||
+                            proxiedElement.getAttribute("value") ||
+                            "";
 
                         if (isFirstRun) {
                             previousValue = currentValue;
@@ -205,9 +261,11 @@ window.addEventListener("load", function () {
                         if (currentValue !== previousValue) {
                             previousValue = currentValue;
                             fluxState.updateField(bindKey, currentValue, {
-                                owner: owner
+                                owner: owner,
                             });
-                            sendTemplateUpdate(hostChannel, fluxState);
+                            owner
+                                ? sendBlockUpdate(hostChannel, fluxState, owner)
+                                : sendPageTemplateUpdate(hostChannel, fluxState);
                         }
                     });
 
@@ -229,18 +287,19 @@ window.addEventListener("load", function () {
 
                     if (editor) {
                         editor.on("keyup", function () {
-                            document.querySelector('.flux-refresh__button').classList.toggle('hidden', false);
+                            document
+                                .querySelector(".flux-refresh__button")
+                                .classList.toggle("hidden", false);
                             // @TODO this is a good case for a 'patchUpdate'
                             // where instead of generating the entire HTML, it sends a patch to the specific binding key
                             // This would handle
                             hostChannel.broadcastMessage({
-                                type: 'textUpdate',
+                                type: "textUpdate",
                                 key: bindKey,
                                 owner: owner,
                                 event: bindEvent,
-                                value: editor.getContent()
+                                value: editor.getContent(),
                             });
-
                         });
                     }
                 }
@@ -250,55 +309,113 @@ window.addEventListener("load", function () {
 
                     if (bindEvent === "keyup") {
                         value = listenerEvent.target.value;
-                        if (element.getAttribute('fx-event-type') === 'templateUpdate') {
-                            type = 'HTML';
-                        }
-                        else if (value.length < 1) type = 'HTML';
-                        else type = 'Text';
+                        if (
+                            element.getAttribute("fx-event-type") ===
+                            "templateUpdate"
+                        ) {
+                            type = "HTML";
+                        } else if (value.length < 1) type = "HTML";
+                        else type = "Text";
                     }
 
                     if (bindEvent === "click") {
                         value = listenerEvent.target.checked;
-                        type = 'HTML';
+                        type = "HTML";
                     }
 
                     if (bindEvent === "change") {
-                        value = listenerEvent.target.value || listenerEvent.target.checked;
-                        type = 'HTML';
+                        value =
+                            listenerEvent.target.value ||
+                            listenerEvent.target.checked;
+                        type = "HTML";
                     }
 
                     fluxState.updateField(bindKey, value, {
                         type: type,
-                        owner: owner
+                        owner: owner,
                     });
                     if (!fluxState.getIsActive()) {
                         return;
                     }
 
-                    if (type === 'Text') {
+                    if (type === "Text") {
                         hostChannel.broadcastMessage({
-                            type: 'textUpdate',
+                            type: "textUpdate",
                             key: bindKey,
                             owner: owner,
                             event: bindEvent,
-                            value
+                            value,
                         });
                         return;
                     }
 
-                    sendTemplateUpdate(hostChannel, fluxState);
+                    if (owner) {
+                        sendBlockUpdate(hostChannel, fluxState, owner);
+                    }
+                    else {
+                        sendPageTemplateUpdate(hostChannel, fluxState);
+                    }
                 });
             },
         });
+
+        $("[fx-proxy]").entwine({
+            onmatch: function (event) {
+                var self = $(this);
+                let proxiedElement = self[0];
+                console.log(proxiedElement);
+
+                const parentElement = proxiedElement.closest("[fx-key]");
+
+                const bindKey = parentElement.getAttribute("fx-key");
+                const bindEvent = parentElement.getAttribute("fx-event");
+                const proxyElement = parentElement.getAttribute("fx-proxy");
+                const owner = parentElement.getAttribute("fx-owner") ?? null;
+                const type = parentElement.getAttribute("fx-type") ?? null;
+
+
+                const observer = new MutationObserver((mutations) => {
+                    if (!proxiedElement) {
+                        return;
+                    }
+
+                    const currentValue =
+                        proxiedElement.value ||
+                        proxiedElement.getAttribute("value") ||
+                        "";
+
+                    let previousValue = null;
+                    let isFirstRun = false;
+
+                    if (currentValue !== previousValue) {
+                        previousValue = currentValue;
+                        fluxState.updateField(bindKey, currentValue, {
+                            owner: owner,
+                        });
+                        owner
+                            ? sendBlockUpdate(hostChannel, fluxState, owner)
+                            : sendPageTemplateUpdate(hostChannel, fluxState);
+                    }
+                });
+
+                observer.observe(proxiedElement, {
+                    attributes: true,
+                    attributeFilter: ["value"],
+                    childList: true,
+                    subtree: true,
+                    characterData: false,
+                });
+            },
+        });
+
         $(".flux-refresh__button").entwine({
             onclick: function (event) {
                 var self = $(this);
                 let element = self[0];
 
-                sendTemplateUpdate(hostChannel, fluxState);
-                element.classList.toggle('hidden', true);
-            }
+                sendPageTemplateUpdate(hostChannel, fluxState);
+                element.classList.toggle("hidden", true);
+            },
         });
     });
-
 });
