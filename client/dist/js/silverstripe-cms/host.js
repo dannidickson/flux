@@ -85,7 +85,8 @@ exports["default"] = HostChannel;
 /**
  * FluxLiveState - Manages form field state for live CMS preview updates
  *
- * Tracks field changes in the CMS and sends them to the backend for template updates
+ * Uses FluxConfig.ChangeSet (keyed by ClassName) as the single source of truth
+ * for field changes. Segments provides the structural map of the page.
  */
 Object.defineProperty(exports, "__esModule", ({
   value: true
@@ -94,22 +95,25 @@ const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger
 class FluxLiveState {
   constructor() {
     this.isLiveStateActive = true;
-    this.fields = new Map();
     this.pageID = null;
     this.className = null;
     this.segments = [];
     this.objects = new Map();
     this.initializeFromFluxConfig();
   }
+  getConfig() {
+    if (typeof window !== 'undefined' && window.FluxConfig) {
+      return window.FluxConfig;
+    }
+    return null;
+  }
   /**
    * Initialize state from global FluxConfig
-   * Segments is now a flat array
    */
   initializeFromFluxConfig() {
-    if (typeof window !== 'undefined' && window.FluxConfig) {
-      const config = window.FluxConfig;
+    const config = this.getConfig();
+    if (config) {
       this.segments = config.Segments || [];
-      // Find the Page segment
       const pageSegment = this.segments.find(s => s.Type === 'Page');
       if (pageSegment) {
         this.pageID = pageSegment.ID ? Number(pageSegment.ID) : null;
@@ -118,89 +122,91 @@ class FluxLiveState {
     }
   }
   /**
-   * Update a field's value in the state
-   * Now includes segment ownership information
+   * Update a field's value in the ChangeSet
    */
   updateField(key, value, options) {
-    // Find the segment this field belongs to
     let segment;
     if (options?.owner) {
-      // Find segment by owner
       segment = this.segments.find(s => s.owner === options.owner);
     } else {
-      // Default to Page segment
       segment = this.segments.find(s => s.Type === 'Page');
     }
-    this.fields.set(key, {
-      key,
-      value,
-      type: options?.type,
-      owner: options?.owner || segment?.owner,
-      segmentType: options?.segmentType || segment?.Type || 'Page',
-      className: options?.className || segment?.ClassName || '',
-      segmentID: options?.segmentID || segment?.ID || '',
-      updatedAt: Date.now()
-    });
+    const resolvedClassName = segment?.ClassName || '';
+    const config = this.getConfig();
+    if (config && resolvedClassName) {
+      if (Array.isArray(config.ChangeSet)) {
+        config.ChangeSet = {};
+      }
+      if (!config.ChangeSet[resolvedClassName]) {
+        config.ChangeSet[resolvedClassName] = {};
+      }
+      config.ChangeSet[resolvedClassName][key] = value;
+    }
     if (true) {
       // @ts-ignore
-      window.FluxLiveState = this; // Expose for debugging
+      window.FluxLiveState = this;
     }
   }
   /**
-   * Get a field's current value
+   * Get the full ChangeSet
    */
-  getField(key) {
-    const field = this.fields.get(key);
-    return field ? field.value : null;
+  getChangeSet() {
+    const config = this.getConfig();
+    return config?.ChangeSet || {};
   }
   /**
-   * Get all changed fields as a plain object
+   * Find the segment metadata for a given owner
    */
-  getChangedFields() {
-    const fields = {};
-    this.fields.forEach((fieldData, key) => {
-      fields[key] = fieldData.value;
-    });
-    return fields;
+  getSegmentByOwner(owner) {
+    return this.segments.find(s => s.owner === owner);
   }
   /**
-   * Get changed fields grouped by segment
-   * Returns a structure that maps owner -> fields
-   */
-  getChangedFieldsBySegment() {
-    const segmentChanges = {};
-    this.fields.forEach(fieldData => {
-      const segmentKey = fieldData.owner || 'Page';
-      if (!segmentChanges[segmentKey]) {
-        segmentChanges[segmentKey] = {
-          segmentType: fieldData.segmentType,
-          className: fieldData.className,
-          segmentID: fieldData.segmentID,
-          owner: fieldData.owner,
-          fields: {}
-        };
-      }
-      segmentChanges[segmentKey].fields[fieldData.key] = fieldData.value;
-    });
-    return segmentChanges;
-  }
-  /**
-   * Clear all changed fields
+   * Clear all changed fields from the ChangeSet
    */
   clear() {
-    this.fields.clear();
+    const config = this.getConfig();
+    if (config) {
+      config.ChangeSet = {};
+    }
+  }
+  /**
+   * Build an enriched ChangeSet for the API, keyed by segment Type.
+   *
+   * Returns: {
+   *   "Page": { ClassName, ID, fields },
+   *   "Element": [{ ClassName, ID, fields }, ...]
+   * }
+   */
+  buildChangeSetPayload() {
+    const rawChangeSet = this.getChangeSet();
+    const payload = {};
+    for (const segment of this.segments) {
+      const fields = rawChangeSet[segment.ClassName];
+      if (!fields || Object.keys(fields).length === 0) continue;
+      const entry = {
+        ClassName: segment.ClassName,
+        ID: segment.ID,
+        fields
+      };
+      if (segment.Type === 'Page') {
+        payload['Page'] = entry;
+      } else {
+        if (!payload[segment.Type]) {
+          payload[segment.Type] = [];
+        }
+        payload[segment.Type].push(entry);
+      }
+    }
+    return payload;
   }
   /**
    * Get the state as JSON for sending to the server
-   * Includes segment ownership information
    */
   toJSON() {
     return {
       pageID: this.pageID,
       className: this.className,
-      segments: this.segments,
-      fields: this.getChangedFields(),
-      segmentChanges: this.getChangedFieldsBySegment()
+      changeSet: this.buildChangeSetPayload()
     };
   }
   /**
@@ -216,15 +222,13 @@ class FluxLiveState {
     return this.segments.filter(s => s.Type === 'Element');
   }
   /**
-   * Send state to the backend and get updated template
+   * Send full state to the backend (page + all element changes)
    */
   async sendUpdate(apiEndpoint) {
     const state = this.toJSON();
-    console.log('state', state);
     if (this.pageID === null) {
       throw new Error(`Missing page id`);
     }
-    ;
     const url = `${apiEndpoint}/pageTemplateUpdate?pageID=${this.pageID}`;
     const response = await fetch(url, {
       method: 'POST',
@@ -236,17 +240,21 @@ class FluxLiveState {
     if (!response.ok) {
       throw new Error(`Template update failed: ${response.statusText}`);
     }
-    const data = await response.json();
-    return data;
+    return response.json();
   }
   /**
    * Send a block-scoped update for a specific segment owner
+   * Filters the ChangeSet to just the relevant segment's ClassName
    */
   async sendBlockUpdate(apiEndpoint, owner) {
-    const segmentChanges = this.getChangedFieldsBySegment();
-    const segment = segmentChanges[owner];
+    const segment = this.getSegmentByOwner(owner);
     if (!segment) {
-      throw new Error(`No segment changes found for owner: ${owner}`);
+      throw new Error(`No segment found for owner: ${owner}`);
+    }
+    const rawChangeSet = this.getChangeSet();
+    const fields = rawChangeSet[segment.ClassName];
+    if (!fields || Object.keys(fields).length === 0) {
+      throw new Error(`No changes found for owner: ${owner}`);
     }
     if (this.pageID === null) {
       throw new Error(`Missing page id`);
@@ -254,11 +262,13 @@ class FluxLiveState {
     const payload = {
       pageID: this.pageID,
       className: this.className,
-      owner: owner,
-      segmentType: segment.segmentType,
-      segmentClassName: segment.className,
-      segmentID: segment.segmentID,
-      fields: segment.fields
+      changeSet: {
+        [segment.Type]: [{
+          ClassName: segment.ClassName,
+          ID: segment.ID,
+          fields
+        }]
+      }
     };
     const url = `${apiEndpoint}/blockUpdate?pageID=${this.pageID}&owner=${encodeURIComponent(owner)}`;
     const response = await fetch(url, {
@@ -273,15 +283,9 @@ class FluxLiveState {
     }
     return response.json();
   }
-  /**
-   * Set the page ID
-   */
   setPageID(pageID) {
     this.pageID = pageID;
   }
-  /**
-   * Set the class name
-   */
   setClassName(className) {
     this.className = className;
   }
@@ -308,8 +312,7 @@ class FluxLiveState {
       pageID: this.pageID,
       className: this.className,
       segments: this.segments,
-      fields: this.getChangedFields(),
-      fieldCount: this.fields.size,
+      changeSet: this.getChangeSet(),
       isLiveStateActive: this.isLiveStateActive
     });
   }
@@ -377,6 +380,18 @@ async function sendPageTemplateUpdate(hostChannel, fluxState, cooldownMs = 500) 
       html: response.html,
       changedFields: response.changedFields
     });
+    if (response.segmentTemplateChanges) {
+      const {
+        Elements
+      } = response.segmentTemplateChanges;
+      Object.entries(Elements).forEach(([id, html]) => {
+        hostChannel.broadcastMessage({
+          type: "blockUpdate",
+          html: html,
+          targetOwner: `#e${id}`
+        });
+      });
+    }
     return response;
   } catch (error) {
     console.error("Template update failed:", error);
@@ -446,10 +461,8 @@ window.addEventListener("load", function () {
           // Only trigger update when transitioning TO split mode, not when already in it
           if (isSplitMode && !wasSplitMode) {
             fluxState.setLiveStateActive(true);
-            // Send config to iframe when entering split mode
             sendFluxConfigToIframe();
-            // Only send template update if there are field changes
-            if (fluxState.getChangedFields() && Object.keys(fluxState.getChangedFields()).length > 0) {
+            if (Object.keys(fluxState.getChangeSet()).length > 0) {
               sendPageTemplateUpdate(hostChannel, fluxState);
             }
           } else if (!isSplitMode && wasSplitMode) {

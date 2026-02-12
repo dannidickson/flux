@@ -21,10 +21,9 @@ class APIController extends Controller
     ];
 
     /**
-     * Gets the DataObject and renders the template.
-     *
-     * Supports rendering entire page OR specific segments (e.g., just a CTA element)
-     * Expects pageID, and optionally a target segment owner
+     * Renders the full page template with all ChangeSet entries applied.
+     * Handles both Page and Element changes — Element entries are applied
+     * via applyBlockUpdate() before the full page render.
      *
      * @see FluxLiveState
      */
@@ -35,7 +34,6 @@ class APIController extends Controller
 
             $pageID = $request->getVar('pageID') ?? $request->postVar('pageID');
             $className = $request->getVar('className') ?? $request->postVar('className') ?? SiteTree::class;
-            $targetOwner = $request->getVar('owner') ?? $request->postVar('owner'); // Optional: specific segment to render
 
             if (!$pageID) {
                 return HTTPResponse::create(json_encode(['error' => 'pageID is required']), 400)
@@ -43,7 +41,7 @@ class APIController extends Controller
             }
 
             $liveState = json_decode($request->getBody(), true);
-            $segmentChanges = $liveState['segmentChanges'] ?? [];
+            $changeSet = $liveState['changeSet'] ?? [];
 
             $page = DataObject::get_by_id($className, $pageID);
 
@@ -52,41 +50,31 @@ class APIController extends Controller
                     ->addHeader('Content-Type', 'application/json');
             }
 
-            // Apply segment-specific changes
-            foreach ($segmentChanges as $segmentKey => $segmentData) {
-                $segmentType = $segmentData['segmentType'] ?? 'Page';
-                $segmentID = $segmentData['segmentID'] ?? null;
-                $segmentClassName = $segmentData['className'] ?? null;
-                $fields = $segmentData['fields'] ?? [];
-
-                if ($segmentType === 'Page') {
-                    // Apply changes to page
-                    foreach ($fields as $fieldName => $value) {
-                        if ($page->hasField($fieldName)) {
-                            $page->$fieldName = $value;
-                        }
-                    }
-                } elseif ($segmentType === 'Element' && $segmentID && $segmentClassName) {
-                    // Apply changes to specific element
-                    $element = DataObject::get_by_id($segmentClassName, $segmentID);
-                    if ($element) {
-                        foreach ($fields as $fieldName => $value) {
-                            if ($element->hasField($fieldName)) {
-                                $element->$fieldName = $value;
-                            }
-                        }
+            // Apply Page changes
+            if (isset($changeSet['Page'])) {
+                $fields = $changeSet['Page']['fields'] ?? [];
+                foreach ($fields as $fieldName => $value) {
+                    if ($page->hasField($fieldName)) {
+                        $page->$fieldName = $value;
                     }
                 }
             }
 
-            // Render based on target
-            if ($targetOwner && isset($segmentChanges[$targetOwner])) {
-                // Render specific segment
-                $html = $this->renderSegment($targetOwner, $segmentChanges[$targetOwner]);
-            } else {
-                // Render entire page
-                $html = $this->renderPageTemplate($page);
+            $segmentTemplateChanges = [
+                'Elements' => [],
+            ];
+
+            // Apply Element changes via shared block update logic
+            if (isset($changeSet['Element'])) {
+                foreach ($changeSet['Element'] as $entry) {
+                    $element = $this->applyBlockUpdate($entry);
+                    $html = $element->forTemplate();
+                    $segmentTemplateChanges['Elements'][$entry['ID']] = $html;
+                }
             }
+
+            // Render entire page
+            $html = $this->renderPageTemplate($page);
 
             // @todo add proper validation for 'Trusted'
             $isTrusted = true;
@@ -95,8 +83,8 @@ class APIController extends Controller
                 'pageID' => $pageID,
                 'className' => $className,
                 'html' => $html,
-                'targetOwner' => $targetOwner,
-                'segmentChanges' => $segmentChanges,
+                'segmentTemplateChanges' => $segmentTemplateChanges,
+                'changeSet' => $changeSet,
                 'trusted' => $isTrusted,
             ];
 
@@ -107,6 +95,9 @@ class APIController extends Controller
         });
     }
 
+    /**
+     * Renders a single block/element with ChangeSet applied.
+     */
     public function blockUpdate(HTTPRequest $request): HTTPResponse
     {
         return Versioned::withVersionedMode(function () use ($request) {
@@ -121,28 +112,21 @@ class APIController extends Controller
             }
 
             $body = json_decode($request->getBody(), true);
+            $changeSet = $body['changeSet'] ?? [];
 
-            $segmentID = $body['segmentID'] ?? null;
-            $segmentClassName = $body['segmentClassName'] ?? null;
-            $fields = $body['fields'] ?? [];
+            $entries = $changeSet['Element'] ?? [];
 
-            if (!$segmentID || !$segmentClassName) {
-                return HTTPResponse::create(json_encode(['error' => 'segmentID and segmentClassName are required']), 400)
+            if (empty($entries)) {
+                return HTTPResponse::create(json_encode(['error' => 'changeSet.Element is required']), 400)
                     ->addHeader('Content-Type', 'application/json');
             }
 
-            $element = DataObject::get_by_id($segmentClassName, $segmentID);
+            $entry = $entries[0];
+            $element = $this->applyBlockUpdate($entry);
 
             if (!$element) {
                 return HTTPResponse::create(json_encode(['error' => 'Element not found']), 404)
                     ->addHeader('Content-Type', 'application/json');
-            }
-
-            // Apply field changes BEFORE rendering
-            foreach ($fields as $fieldName => $value) {
-                if ($element->hasField($fieldName)) {
-                    $element->$fieldName = $value;
-                }
             }
 
             $html = $element->forTemplate();
@@ -153,7 +137,6 @@ class APIController extends Controller
             $response = [
                 'pageID' => $pageID,
                 'owner' => $owner,
-                'segmentID' => $segmentID,
                 'html' => $html,
                 'trusted' => $isTrusted,
             ];
@@ -165,44 +148,43 @@ class APIController extends Controller
         });
     }
 
+    /**
+     * Apply field changes from a ChangeSet entry to a DataObject.
+     * Shared between pageTemplateUpdate (for Element entries) and blockUpdate.
+     *
+     * @param array $entry { ClassName, ID, fields: { fieldName: value } }
+     * @return DataObject|null The DataObject with changes applied, or null if not found
+     */
+    private function applyBlockUpdate(array $entry): ?DataObject
+    {
+        $segmentClassName = $entry['ClassName'] ?? null;
+        $segmentID = $entry['ID'] ?? null;
+        $fields = $entry['fields'] ?? [];
+
+        if (!$segmentClassName || !$segmentID) {
+            return null;
+        }
+
+        $element = DataObject::get_by_id($segmentClassName, $segmentID);
+
+        if (!$element) {
+            return null;
+        }
+
+        foreach ($fields as $fieldName => $value) {
+            if ($element->hasField($fieldName)) {
+                $element->$fieldName = $value;
+            }
+        }
+
+        return $element;
+    }
+
     public function shortCodesFragmentPatch(HTTPRequest $request): HTTPResponse
     {
         // Placeholder for future block update logic
         return HTTPResponse::create(json_encode(['status' => 'Not implemented']), 501)
             ->addHeader('Content-Type', 'application/json');
-    }
-
-    /**
-     * Render a specific segment (e.g., just a CTA element)
-     *
-     * @param string $owner The owner identifier (e.g., #element-5)
-     * @param array $segmentData Segment metadata
-     */
-    private function renderSegment(string $owner, array $segmentData): string
-    {
-        $segmentID = $segmentData['segmentID'] ?? null;
-        $segmentClassName = $segmentData['className'] ?? null;
-        $fields = $segmentData['fields'] ?? [];
-
-        if (!$segmentID || !$segmentClassName) {
-            return '';
-        }
-
-        $dataObject = DataObject::get_by_id($segmentClassName, $segmentID);
-
-        if (!$dataObject) {
-            return '';
-        }
-
-        // Apply field changes before rendering (fixes re-fetch losing in-memory changes)
-        foreach ($fields as $fieldName => $value) {
-            if ($dataObject->hasField($fieldName)) {
-                $dataObject->$fieldName = $value;
-            }
-        }
-
-        // Render just this segment
-        return $dataObject->forTemplate();
     }
 
     /**

@@ -52,6 +52,19 @@ async function sendPageTemplateUpdate(
             changedFields: response.changedFields,
         });
 
+
+        if (response.segmentTemplateChanges) {
+            const { Elements } = response.segmentTemplateChanges;
+
+            Object.entries(Elements).forEach(([id, html]) => {
+                hostChannel.broadcastMessage({
+                    type: "blockUpdate",
+                    html: html,
+                    targetOwner: `#e${id}`,
+                });
+            });
+        }
+
         return response;
     } catch (error) {
         console.error("Template update failed:", error);
@@ -149,12 +162,9 @@ window.addEventListener("load", function () {
                     // Only trigger update when transitioning TO split mode, not when already in it
                     if (isSplitMode && !wasSplitMode) {
                         fluxState.setLiveStateActive(true);
-                        // Send config to iframe when entering split mode
                         sendFluxConfigToIframe();
-                        // Only send template update if there are field changes
                         if (
-                            fluxState.getChangedFields() &&
-                            Object.keys(fluxState.getChangedFields()).length > 0
+                            Object.keys(fluxState.getChangeSet()).length > 0
                         ) {
                             sendPageTemplateUpdate(hostChannel, fluxState);
                         }
@@ -240,8 +250,7 @@ window.addEventListener("load", function () {
                     let isFirstRun = true;
 
                     const observer = new MutationObserver((mutations) => {
-                        const proxiedElement =
-                            element.querySelector(proxyElement);
+                        const proxiedElement = element.querySelector(proxyElement);
 
                         if (!proxiedElement) {
                             return;

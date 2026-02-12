@@ -15,6 +15,7 @@ declare global {
                 ClassName: string;
                 owner?: string;
             }>;
+            Fields: Record<string, Record<string, any>>;
             ChangeSet: Record<string, Record<string, any>>;
             Events: any[];
         };
@@ -45,22 +46,22 @@ window.addEventListener('DOMContentLoaded', () => {
 
 /**
  * Adds the Config bindings to each element
- * Iterates through flat Segments array and looks up ChangeSet by ClassName
+ * Iterates through flat Segments array and looks up Fields by ClassName
  */
 const addBindingsToSegments = () => {
     if (!window.FluxConfig) return;
 
-    const { Segments, ChangeSet } = window.FluxConfig;
+    const { Segments, Fields } = window.FluxConfig;
 
-    if (!Segments || !ChangeSet) return;
+    if (!Segments || !Fields) return;
 
     logger.log('Segments:', Segments);
-    logger.log('ChangeSet:', ChangeSet);
+    logger.log('Fields:', Fields);
 
     // Loop through flat segments array
     for (const segment of Segments) {
         // Look up fields for this segment by ClassName
-        const segmentFields = ChangeSet[segment.ClassName];
+        const segmentFields = Fields[segment.ClassName];
 
         if (!segmentFields) {
             logger.log(`No fields found for ${segment.ClassName}`);
@@ -112,7 +113,6 @@ const addBindingToElement = (field: any, segment: any) => {
  */
 const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
     logger.log('Flux message received:', fluxBroadCastMessage);
-    // Handle full template updates
     if (fluxBroadCastMessage.type === "pageTemplateUpdate") {
         if (!fluxBroadCastMessage.html) {
             logger.error('pageTemplateUpdate received but no HTML provided');
@@ -133,7 +133,6 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
             },
             callbacks: {
                 beforeNodeMorphed: (oldNode: any, newNode: any) => {
-                    // Skip morphing script tags to avoid re-execution
                     if (oldNode.tagName === 'SCRIPT') {
                         return false;
                     }

@@ -147,9 +147,10 @@ class FluxConfigService
     public static function getConfig(): array
     {
         return [
-            'Segments' => self::$segments, // Flat array of segments
-            'ChangeSet' => self::$fields, // Grouped by ClassName for lookup
-            'Events' => [], // Reserved for future use
+            'Segments' => self::$segments,
+            'Fields' => self::$fields,
+            'ChangeSet' => (object) [],
+            'Events' => [],
         ];
     }
 

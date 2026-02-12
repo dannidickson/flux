@@ -100,21 +100,21 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 /**
  * Adds the Config bindings to each element
- * Iterates through flat Segments array and looks up ChangeSet by ClassName
+ * Iterates through flat Segments array and looks up Fields by ClassName
  */
 const addBindingsToSegments = () => {
   if (!window.FluxConfig) return;
   const {
     Segments,
-    ChangeSet
+    Fields
   } = window.FluxConfig;
-  if (!Segments || !ChangeSet) return;
+  if (!Segments || !Fields) return;
   logger_1.logger.log('Segments:', Segments);
-  logger_1.logger.log('ChangeSet:', ChangeSet);
+  logger_1.logger.log('Fields:', Fields);
   // Loop through flat segments array
   for (const segment of Segments) {
     // Look up fields for this segment by ClassName
-    const segmentFields = ChangeSet[segment.ClassName];
+    const segmentFields = Fields[segment.ClassName];
     if (!segmentFields) {
       logger_1.logger.log(`No fields found for ${segment.ClassName}`);
       continue;
@@ -156,7 +156,6 @@ const addBindingToElement = (field, segment) => {
  */
 const updateElement = fluxBroadCastMessage => {
   logger_1.logger.log('Flux message received:', fluxBroadCastMessage);
-  // Handle full template updates
   if (fluxBroadCastMessage.type === "pageTemplateUpdate") {
     if (!fluxBroadCastMessage.html) {
       logger_1.logger.error('pageTemplateUpdate received but no HTML provided');
@@ -174,7 +173,6 @@ const updateElement = fluxBroadCastMessage => {
       },
       callbacks: {
         beforeNodeMorphed: (oldNode, newNode) => {
-          // Skip morphing script tags to avoid re-execution
           if (oldNode.tagName === 'SCRIPT') {
             return false;
           }
