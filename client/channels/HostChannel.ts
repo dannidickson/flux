@@ -6,7 +6,6 @@ export default class HostChannel {
     frame: Element | null;
     private readyHandler: (event: MessageEvent) => void;
 
-
     constructor(url: string, frameElement: string) {
         this.channelType = "MessageChannel";
 

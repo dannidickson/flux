@@ -1,10 +1,10 @@
 /******/ (function() { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
-/***/ "./client/bind/FrameChannel.ts":
-/*!*************************************!*\
-  !*** ./client/bind/FrameChannel.ts ***!
-  \*************************************/
+/***/ "./client/channels/FrameChannel.ts":
+/*!*****************************************!*\
+  !*** ./client/channels/FrameChannel.ts ***!
+  \*****************************************/
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 "use strict";
@@ -78,81 +78,34 @@ var __importDefault = this && this.__importDefault || function (mod) {
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
-const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../bind/FrameChannel */ "./client/bind/FrameChannel.ts"));
+const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../channels/FrameChannel */ "./client/channels/FrameChannel.ts"));
 // @ts-ignore
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
+const FluxDirectives_1 = __webpack_require__(/*! ../core/FluxDirectives */ "./client/core/FluxDirectives.ts");
+const beforeNodeMorphed = oldNode => oldNode.tagName !== 'SCRIPT';
 const frame = new FrameChannel_1.default();
 frame.onRecievedMessage = event => {
   const messageType = event.data.type;
   if (messageType === 'configUpdate') {
     window.FluxConfig = event.data.config;
     logger_1.logger.log('FluxConfig received from host:', window.FluxConfig);
-    addBindingsToSegments();
+    (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
     return;
   }
   updateElement(event.data);
 };
 window.addEventListener('DOMContentLoaded', () => {
   if (window.FluxConfig) {
-    addBindingsToSegments();
+    (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
   }
 });
-/**
- * Adds the Config bindings to each element
- * Iterates through flat Segments array and looks up Fields by ClassName
- */
-const addBindingsToSegments = () => {
-  if (!window.FluxConfig) return;
-  const {
-    Segments,
-    Fields
-  } = window.FluxConfig;
-  if (!Segments || !Fields) return;
-  logger_1.logger.log('Segments:', Segments);
-  logger_1.logger.log('Fields:', Fields);
-  // Loop through flat segments array
-  for (const segment of Segments) {
-    // Look up fields for this segment by ClassName
-    const segmentFields = Fields[segment.ClassName];
-    if (!segmentFields) {
-      logger_1.logger.log(`No fields found for ${segment.ClassName}`);
-      continue;
-    }
-    // Apply bindings for each field in this segment
-    for (const [fieldKey, fieldValue] of Object.entries(segmentFields)) {
-      addBindingToElement(fieldValue, segment);
-    }
-  }
-};
-const addBindingToElement = (field, segment) => {
-  // Build scoped query selector
-  const querySelectorParts = [];
-  if (segment.owner) {
-    querySelectorParts.push(`${segment.owner}`);
-  }
-  querySelectorParts.push(field.bind);
-  const querySelectorPath = querySelectorParts.join(' ');
-  const element = document.querySelector(querySelectorPath);
-  if (!element) {
-    logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${querySelectorPath}`);
-    return;
-  }
-  element.setAttribute(`fx-key`, field.key);
-  element.setAttribute(`fx-type`, field.type);
-  if (segment.owner) {
-    element.setAttribute(`fx-owner`, segment.owner);
-  }
-};
 /**
  * Applies the returned HTML to the document
  *
  * @TODO
  *  move this into the `core/index`
  *  Allow developer option for the scripts to be reloaded if they want
- *
- * @param fluxBroadCastMessage
- * @returns
  */
 const updateElement = fluxBroadCastMessage => {
   logger_1.logger.log('Flux message received:', fluxBroadCastMessage);
@@ -163,26 +116,19 @@ const updateElement = fluxBroadCastMessage => {
     }
     logger_1.logger.log('Morphing document with new HTML...');
     logger_1.logger.time('morph');
-    // Parse the HTML to remove doctype and extract just the <html> element
     const parser = new DOMParser();
     const newDoc = parser.parseFromString(fluxBroadCastMessage.html, 'text/html');
-    // Use Idiomorph to morph the entire document
     idiomorph_1.default.morph(document.documentElement, newDoc.documentElement, {
       head: {
         style: 'morph'
       },
       callbacks: {
-        beforeNodeMorphed: (oldNode, newNode) => {
-          if (oldNode.tagName === 'SCRIPT') {
-            return false;
-          }
-          return true;
-        }
+        beforeNodeMorphed
       }
     });
     logger_1.logger.log('Document morphed successfully');
     logger_1.logger.timeEnd('morph');
-    addBindingsToSegments();
+    (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
     return;
   }
   if (fluxBroadCastMessage.type === "blockUpdate") {
@@ -200,30 +146,18 @@ const updateElement = fluxBroadCastMessage => {
     idiomorph_1.default.morph(ownerElement, fluxBroadCastMessage.html, {
       morphStyle: 'innerHTML',
       callbacks: {
-        beforeNodeMorphed: (oldNode, newNode) => {
-          if (oldNode.tagName === 'SCRIPT') {
-            return false;
-          }
-          return true;
-        }
+        beforeNodeMorphed
       }
     });
     logger_1.logger.log('Block morphed successfully');
     logger_1.logger.timeEnd('blockMorph');
-    addBindingsToSegments();
+    (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
     return;
   }
-  // Handle individual field updates (textUpdate)
   if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
     logger_1.logger.log(fluxBroadCastMessage);
-    const querySelectorParts = [];
-    if (fluxBroadCastMessage.owner) {
-      querySelectorParts.push(`${fluxBroadCastMessage.owner}`);
-    }
-    querySelectorParts.push(`[fx-key="${fluxBroadCastMessage.key}"]`);
-    const querySelectorPath = querySelectorParts.join(' ');
-    logger_1.logger.log(querySelectorPath);
-    const element = document.querySelector(querySelectorPath);
+    const parts = fluxBroadCastMessage.owner ? [`${fluxBroadCastMessage.owner}`, `[fx-key="${fluxBroadCastMessage.key}"]`] : [`[fx-key="${fluxBroadCastMessage.key}"]`];
+    const element = document.querySelector(parts.join(' '));
     if (!element) {
       logger_1.logger.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
       return;
@@ -235,6 +169,94 @@ const updateElement = fluxBroadCastMessage => {
   }
   logger_1.logger.warn('Unknown message type or missing data:', fluxBroadCastMessage);
 };
+
+/***/ }),
+
+/***/ "./client/core/FluxDirective.ts":
+/*!**************************************!*\
+  !*** ./client/core/FluxDirective.ts ***!
+  \**************************************/
+/***/ (function(__unused_webpack_module, exports) {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.fromElement = fromElement;
+exports.getElementValue = getElementValue;
+function fromElement(el) {
+  const key = el.getAttribute('fx-key');
+  if (!key) return null;
+  return {
+    element: el,
+    key,
+    event: el.getAttribute('fx-event'),
+    owner: el.getAttribute('fx-owner'),
+    type: el.getAttribute('fx-type'),
+    proxySelector: el.getAttribute('fx-proxy'),
+    proxyType: el.getAttribute('fx-proxy-type'),
+    collectSelector: el.getAttribute('fx-collect')
+  };
+}
+function getElementValue(el) {
+  return el.value ?? el.getAttribute('value') ?? '';
+}
+
+/***/ }),
+
+/***/ "./client/core/FluxDirectives.ts":
+/*!***************************************!*\
+  !*** ./client/core/FluxDirectives.ts ***!
+  \***************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.parse = parse;
+exports.applyConfig = applyConfig;
+const FluxDirective_1 = __webpack_require__(/*! ./FluxDirective */ "./client/core/FluxDirective.ts");
+const logger_1 = __webpack_require__(/*! ./logger */ "./client/core/logger.ts");
+/**
+ * Parse all [fx-key] elements in a container into FxDirective instances.
+ */
+function parse(root = document) {
+  return Array.from(root.querySelectorAll('[fx-key]')).map(el => (0, FluxDirective_1.fromElement)(el)).filter(d => d !== null);
+}
+/**
+ * Apply fx-* attributes from FluxConfig to DOM elements.
+ * Called by frame.ts after a morph to re-attach directives.
+ */
+function applyConfig(config) {
+  const {
+    Segments,
+    Fields
+  } = config;
+  if (!Segments || !Fields) return;
+  for (const segment of Segments) {
+    const segmentFields = Fields[segment.ClassName];
+    if (!segmentFields) {
+      logger_1.logger.log(`No fields found for ${segment.ClassName}`);
+      continue;
+    }
+    for (const [, field] of Object.entries(segmentFields)) {
+      const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
+      const element = document.querySelector(parts.join(' '));
+      if (!element) {
+        logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${parts.join(' ')}`);
+        continue;
+      }
+      element.setAttribute('fx-key', field.key);
+      element.setAttribute('fx-type', field.type);
+      if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+    }
+  }
+}
 
 /***/ }),
 

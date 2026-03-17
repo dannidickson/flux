@@ -30,7 +30,7 @@ class FluxGridFieldEditableColumns extends BaseGridFieldEditableColumns
                 $field = $fields->dataFieldByName($fieldName);
 
                 if ($field && $field->hasMethod('applyFluxAttributes')) {
-                    // Get the field's schema data type for flux-type
+                    // Get the field's schema data type for ffx-type
                     $schemaDataType = $field->getSchemaDataType();
                     $componentType = $field->getSchemaComponent();
 

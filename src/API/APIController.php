@@ -55,7 +55,7 @@ class APIController extends Controller
                 $fields = $changeSet['Page']['fields'] ?? [];
                 foreach ($fields as $fieldName => $value) {
                     if ($page->hasField($fieldName)) {
-                        $page->$fieldName = $value;
+                        $page->$fieldName = $this->normaliseFieldValue($value);
                     }
                 }
             }
@@ -173,7 +173,7 @@ class APIController extends Controller
 
         foreach ($fields as $fieldName => $value) {
             if ($element->hasField($fieldName)) {
-                $element->$fieldName = $value;
+                $element->$fieldName = $this->normaliseFieldValue($value);
             }
         }
 
@@ -185,6 +185,19 @@ class APIController extends Controller
         // Placeholder for future block update logic
         return HTTPResponse::create(json_encode(['status' => 'Not implemented']), 501)
             ->addHeader('Content-Type', 'application/json');
+    }
+
+    /**
+     * Normalise a field value for assignment to a DataObject.
+     * Multi-select fields (e.g. CheckboxSetField) arrive as arrays — convert to comma-separated string.
+     */
+    private function normaliseFieldValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            return implode(',', $value);
+        }
+
+        return $value;
     }
 
     /**

@@ -6,20 +6,7 @@
  */
 
 import Logger, { logger } from "../core/logger";
-
-interface FluxConfigSegment {
-    Type: 'Page' | 'Element';
-    ClassName: string;
-    ID: string | number;
-    owner?: string;
-}
-
-interface FluxConfigStructure {
-    Segments: FluxConfigSegment[];
-    Fields: Record<string, Record<string, any>>;
-    ChangeSet: Record<string, Record<string, any>>;
-    Events: any[];
-}
+import type { FluxConfigSegment, FluxConfigStructure } from "../types/flux.interface";
 
 class FluxLiveState {
     private isLiveStateActive: boolean = true;

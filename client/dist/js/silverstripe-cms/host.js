@@ -2,10 +2,10 @@
 /******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
 
-/***/ "./client/bind/HostChannel.ts":
-/*!************************************!*\
-  !*** ./client/bind/HostChannel.ts ***!
-  \************************************/
+/***/ "./client/channels/HostChannel.ts":
+/*!****************************************!*\
+  !*** ./client/channels/HostChannel.ts ***!
+  \****************************************/
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -71,6 +71,358 @@ class HostChannel {
   }
 }
 exports["default"] = HostChannel;
+
+/***/ }),
+
+/***/ "./client/cms-live-updates/FluxDirectiveManager.ts":
+/*!*********************************************************!*\
+  !*** ./client/cms-live-updates/FluxDirectiveManager.ts ***!
+  \*********************************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+const FluxDirective_1 = __webpack_require__(/*! ../core/FluxDirective */ "./client/core/FluxDirective.ts");
+class FluxDirectiveManager {
+  constructor($, fluxState, onTriggerUpdate, hostChannel) {
+    this.$ = $;
+    this.fluxState = fluxState;
+    this.onTriggerUpdate = onTriggerUpdate;
+    this.hostChannel = hostChannel;
+  }
+  initialize() {
+    const manager = this;
+    this.$.entwine("flux", function ($) {
+      manager.setupKeyBindings($);
+      manager.setupRefreshButton($);
+    });
+  }
+  setupKeyBindings($) {
+    const manager = this;
+    $("[fx-key]").entwine({
+      onmatch: function (_event) {
+        const element = this[0];
+        const binding = (0, FluxDirective_1.fromElement)(element);
+        if (!binding) return;
+        // Watch for file upload / react dropdown changes
+        if (binding.proxySelector) {
+          manager.observeKeyProxyElement(element, binding);
+          return;
+        }
+        if (element.tagName === "TEXTAREA" && binding.type === "HTML") {
+          manager.setupTinyMCEListener(element, binding);
+        }
+        element.addEventListener(binding.event, listenerEvent => {
+          let value;
+          let type;
+          if (binding.collectSelector) {
+            value = Array.from(element.querySelectorAll(binding.collectSelector)).map(el => el.value);
+            type = "HTML";
+          } else {
+            ({
+              value,
+              type
+            } = manager.extractEventData(listenerEvent, binding.event, element));
+          }
+          manager.fluxState.updateField(binding.key, value, {
+            type,
+            owner: binding.owner ?? undefined
+          });
+          if (!manager.fluxState.getIsActive()) return;
+          if (type === "Text") {
+            manager.hostChannel.broadcastMessage({
+              type: "textUpdate",
+              key: binding.key,
+              owner: binding.owner,
+              event: binding.event,
+              value
+            });
+            return;
+          }
+          manager.onTriggerUpdate(binding.owner);
+        });
+      }
+    });
+  }
+  setupRefreshButton($) {
+    const manager = this;
+    $(".flux-refresh__button").entwine({
+      onclick: function (_event) {
+        const element = this[0];
+        manager.onTriggerUpdate(null);
+        element.classList.toggle("hidden", true);
+      }
+    });
+  }
+  /**
+   * Observe a proxy container found via [fx-key]'s fx-proxy attribute.
+   * Tracks first-run to avoid triggering on the initial mutation.
+   */
+  observeKeyProxyElement(element, binding) {
+    let previousValue = null;
+    let isFirstRun = true;
+    // For previousElementSibling (e.g. UploadField), the [fx-key] element is a leaf
+    // (the file input), and mutations happen inside its previous sibling (the holder div).
+    // Observe that sibling and query the proxy within it.
+    // For all other types, observe the field container itself.
+    const observeTarget = binding.proxyType === "previousElementSibling" ? element.previousElementSibling ?? element : element;
+    const observer = new MutationObserver(() => {
+      const proxiedElement = observeTarget.querySelector(binding.proxySelector);
+      if (!proxiedElement) return;
+      const currentValue = (0, FluxDirective_1.getElementValue)(proxiedElement);
+      if (isFirstRun) {
+        previousValue = currentValue;
+        isFirstRun = false;
+        return;
+      }
+      if (currentValue !== previousValue) {
+        previousValue = currentValue;
+        this.fluxState.updateField(binding.key, currentValue, {
+          owner: binding.owner ?? undefined
+        });
+        this.onTriggerUpdate(binding.owner);
+      }
+    });
+    observer.observe(observeTarget, {
+      childList: true,
+      subtree: true,
+      characterData: false
+    });
+  }
+  setupTinyMCEListener(element, binding) {
+    const editor = window.tinymce?.get(element.id);
+    if (editor) {
+      editor.on("keyup", () => {
+        document.querySelector(".flux-refresh__button")?.classList.toggle("hidden", false);
+        this.hostChannel.broadcastMessage({
+          type: "textUpdate",
+          key: binding.key,
+          owner: binding.owner,
+          event: binding.event,
+          value: editor.getContent()
+        });
+      });
+    }
+  }
+  extractEventData(event, eventType, element) {
+    let value;
+    let type = "HTML";
+    const target = event.target;
+    if (eventType === "keyup") {
+      value = target.value;
+      if (element.getAttribute("fx-event-type") === "templateUpdate") {
+        type = "HTML";
+      } else if (value.length < 1) {
+        type = "HTML";
+      } else {
+        type = "Text";
+      }
+    } else if (eventType === "click") {
+      value = target.checked;
+      type = "HTML";
+    } else if (eventType === "change") {
+      value = target.value || target.checked;
+      type = "HTML";
+    }
+    return {
+      value,
+      type
+    };
+  }
+}
+exports["default"] = FluxDirectiveManager;
+
+/***/ }),
+
+/***/ "./client/cms-live-updates/FluxHostCoordinator.ts":
+/*!********************************************************!*\
+  !*** ./client/cms-live-updates/FluxHostCoordinator.ts ***!
+  \********************************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+
+var __importDefault = this && this.__importDefault || function (mod) {
+  return mod && mod.__esModule ? mod : {
+    "default": mod
+  };
+};
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+const HostChannel_1 = __importDefault(__webpack_require__(/*! ../channels/HostChannel */ "./client/channels/HostChannel.ts"));
+const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
+const FluxDirectiveManager_1 = __importDefault(__webpack_require__(/*! ./FluxDirectiveManager */ "./client/cms-live-updates/FluxDirectiveManager.ts"));
+const FluxLiveState_1 = __importDefault(__webpack_require__(/*! ./FluxLiveState */ "./client/cms-live-updates/FluxLiveState.ts"));
+const API_ENDPOINT = "/flux/api";
+const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
+const PAGE_COOLDOWN_MS = 500;
+const BLOCK_COOLDOWN_MS = 500;
+function createCooldown(ms) {
+  const last = new Map();
+  return (key = 'default') => {
+    const now = Date.now();
+    if (now - (last.get(key) ?? 0) < ms) return false;
+    last.set(key, now);
+    return true;
+  };
+}
+class FluxHostCoordinator {
+  constructor(url, $) {
+    this.url = url;
+    this.$ = $;
+    this.pageReady = createCooldown(PAGE_COOLDOWN_MS);
+    this.blockReady = createCooldown(BLOCK_COOLDOWN_MS);
+    this.observers = [];
+    this.hostChannel = new HostChannel_1.default(url, CMS_FRAME);
+    this.fluxState = new FluxLiveState_1.default();
+  }
+  initialize() {
+    this.setupIframeListeners();
+    this.setupSplitModeObserver();
+    this.setupModalObserver();
+    this.setupFluxBindings();
+  }
+  setupIframeListeners() {
+    const iframe = document.querySelector(CMS_FRAME);
+    if (iframe) {
+      iframe.addEventListener("load", () => this.sendFluxConfigToIframe());
+    }
+  }
+  sendFluxConfigToIframe() {
+    if (window.FluxConfig) {
+      this.hostChannel.broadcastMessage({
+        type: "configUpdate",
+        config: window.FluxConfig
+      });
+    }
+  }
+  observeClassAttribute(element, callback) {
+    const observer = new MutationObserver(mutations => {
+      mutations.forEach(m => {
+        if (m.attributeName === "class") callback(m.target);
+      });
+    });
+    observer.observe(element, {
+      attributes: true,
+      attributeFilter: ["class"]
+    });
+    return observer;
+  }
+  setupSplitModeObserver() {
+    const cmsContainer = document.querySelector(".cms-container");
+    if (!cmsContainer) return;
+    let wasSplitMode = cmsContainer.classList.contains("cms-container--split-mode");
+    if (wasSplitMode) {
+      this.fluxState.setLiveStateActive(true);
+    }
+    const observer = this.observeClassAttribute(cmsContainer, target => {
+      const isSplitMode = target.classList.contains("cms-container--split-mode");
+      if (isSplitMode && !wasSplitMode) {
+        this.fluxState.setLiveStateActive(true);
+        this.sendFluxConfigToIframe();
+        if (Object.keys(this.fluxState.getChangeSet()).length > 0) {
+          this.sendPageTemplateUpdate();
+        }
+      } else if (!isSplitMode && wasSplitMode) {
+        this.fluxState.setLiveStateActive(false);
+      }
+      wasSplitMode = isSplitMode;
+    });
+    this.observers.push(observer);
+  }
+  setupModalObserver() {
+    const bodyElement = document.body;
+    if (!bodyElement) return;
+    const observer = this.observeClassAttribute(bodyElement, target => {
+      if (target.classList.contains("modal-open")) {
+        logger_1.logger.log("Modal opened");
+      } else {
+        window.setTimeout(() => {
+          logger_1.logger.log("Modal closed");
+          this.sendPageTemplateUpdate();
+        }, 500);
+      }
+    });
+    this.observers.push(observer);
+  }
+  async sendPageTemplateUpdate() {
+    if (!this.pageReady()) {
+      logger_1.logger.log("Still in cooldown, skipping update");
+      return;
+    }
+    try {
+      const response = await this.fluxState.sendUpdate(API_ENDPOINT);
+      if (!response.trusted) {
+        logger_1.logger.warn("Source HTML returned unsafe html");
+      }
+      this.hostChannel.broadcastMessage({
+        type: "pageTemplateUpdate",
+        html: response.html,
+        changedFields: response.changedFields
+      });
+      if (response.segmentTemplateChanges) {
+        const {
+          Elements
+        } = response.segmentTemplateChanges;
+        Object.entries(Elements).forEach(([id, html]) => {
+          this.hostChannel.broadcastMessage({
+            type: "blockUpdate",
+            html,
+            targetOwner: `#e${id}`
+          });
+        });
+      }
+      return response;
+    } catch (error) {
+      logger_1.logger.error("Template update failed:", error);
+      throw error;
+    }
+  }
+  async sendBlockUpdate(owner) {
+    if (!this.blockReady(owner)) {
+      logger_1.logger.log(`Block cooldown active for ${owner}, skipping`);
+      return;
+    }
+    try {
+      const response = await this.fluxState.sendBlockUpdate(API_ENDPOINT, owner);
+      if (!response.trusted) {
+        logger_1.logger.warn("Block update returned unsafe html");
+      }
+      logger_1.logger.log(`Morphing block: ${owner}`);
+      this.hostChannel.broadcastMessage({
+        type: "blockUpdate",
+        html: response.html,
+        targetOwner: owner
+      });
+      return response;
+    } catch (error) {
+      logger_1.logger.warn("Block update failed, falling back to full page update:", error);
+      this.sendPageTemplateUpdate();
+    }
+  }
+  triggerUpdate(owner) {
+    if (!this.fluxState.getIsActive()) return;
+    if (owner) {
+      this.sendBlockUpdate(owner);
+    } else {
+      this.sendPageTemplateUpdate();
+    }
+  }
+  setupFluxBindings() {
+    const bindingManager = new FluxDirectiveManager_1.default(this.$, this.fluxState, owner => this.triggerUpdate(owner), this.hostChannel);
+    bindingManager.initialize();
+  }
+  destroy() {
+    this.observers.forEach(observer => observer.disconnect());
+    this.observers = [];
+    this.hostChannel.destroy();
+  }
+}
+exports["default"] = FluxHostCoordinator;
 
 /***/ }),
 
@@ -337,332 +689,44 @@ var __importDefault = this && this.__importDefault || function (mod) {
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
-// @ts-nocheck
-/* eslint-disable */
-const HostChannel_1 = __importDefault(__webpack_require__(/*! ../bind/HostChannel */ "./client/bind/HostChannel.ts"));
-const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
-const FluxLiveState_1 = __importDefault(__webpack_require__(/*! ./FluxLiveState */ "./client/cms-live-updates/FluxLiveState.ts"));
-const API_ENDPOINT = "/flux/api";
-const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
-/**
- * Sends the HTML down to the frame
- * @param hostChannel
- * @param fluxState
- * @returns
- */
-let lastCallTime = 0;
-/**
- * Should probably consider doing this via a queue system
- * This way I can tell which updates can be skipped, or if it requires a template update
- * We need to consider this as we are listening to modal open and close, when the close is triggered
- * it fires this update, but might not require any changes.
- *
- * @param hostChannel
- * @param fluxState
- * @param cooldownMs
- * @returns
- */
-async function sendPageTemplateUpdate(hostChannel, fluxState, cooldownMs = 500) {
-  const now = Date.now();
-  if (now - lastCallTime < cooldownMs) {
-    logger_1.logger.log("Still in cooldown, skipping update");
-    return; // Skip this call
-  }
-  lastCallTime = now;
-  // Execute immediately
-  try {
-    const response = await fluxState.sendUpdate(API_ENDPOINT);
-    if (!response.trusted) {
-      console.warn("Source HTML returned unsafe html");
-    }
-    hostChannel.broadcastMessage({
-      type: "pageTemplateUpdate",
-      html: response.html,
-      changedFields: response.changedFields
-    });
-    if (response.segmentTemplateChanges) {
-      const {
-        Elements
-      } = response.segmentTemplateChanges;
-      Object.entries(Elements).forEach(([id, html]) => {
-        hostChannel.broadcastMessage({
-          type: "blockUpdate",
-          html: html,
-          targetOwner: `#e${id}`
-        });
-      });
-    }
-    return response;
-  } catch (error) {
-    console.error("Template update failed:", error);
-    throw error;
-  }
-}
-const blockCooldowns = new Map();
-async function sendBlockUpdate(hostChannel, fluxState, owner, cooldownMs = 500) {
-  const now = Date.now();
-  const lastCall = blockCooldowns.get(owner) || 0;
-  if (now - lastCall < cooldownMs) {
-    logger_1.logger.log(`Block cooldown active for ${owner}, skipping`);
-    return;
-  }
-  blockCooldowns.set(owner, now);
-  try {
-    const response = await fluxState.sendBlockUpdate(API_ENDPOINT, owner);
-    if (!response.trusted) {
-      console.warn("Block update returned unsafe html");
-    }
-    console.log(`Morphing block: ${owner}`);
-    hostChannel.broadcastMessage({
-      type: "blockUpdate",
-      html: response.html,
-      targetOwner: owner
-    });
-    return response;
-  } catch (error) {
-    console.warn("Block update failed, falling back to full page update:", error);
-    sendPageTemplateUpdate(hostChannel, fluxState);
-  }
-}
+const FluxHostCoordinator_1 = __importDefault(__webpack_require__(/*! ./FluxHostCoordinator */ "./client/cms-live-updates/FluxHostCoordinator.ts"));
 window.addEventListener("load", function () {
-  const $ = window.jQuery;
-  const entwine = $.entwine;
-  const fluxState = new FluxLiveState_1.default();
-  const url = window.location.origin;
-  const hostChannel = new HostChannel_1.default(url, CMS_FRAME);
-  // Send FluxConfig to iframe when it loads
-  const sendFluxConfigToIframe = () => {
-    if (window.FluxConfig) {
-      hostChannel.broadcastMessage({
-        type: "configUpdate",
-        config: window.FluxConfig
-      });
-    }
-  };
-  // Send config when iframe loads
-  const iframe = document.querySelector(CMS_FRAME);
-  if (iframe) {
-    iframe.addEventListener("load", sendFluxConfigToIframe);
-  }
-  // Watch for split mode changes
-  const cmsContainer = document.querySelector(".cms-container");
-  if (cmsContainer) {
-    // Track previous split mode state to detect transitions
-    let wasSplitMode = cmsContainer.classList.contains("cms-container--split-mode");
-    // Set initial state without triggering update
-    if (wasSplitMode) {
-      fluxState.setLiveStateActive(true);
-    }
-    const observer = new MutationObserver(mutations => {
-      mutations.forEach(mutation => {
-        if (mutation.type === "attributes" && mutation.attributeName === "class") {
-          let target = mutation.target;
-          const isSplitMode = target.classList.contains("cms-container--split-mode");
-          // Only trigger update when transitioning TO split mode, not when already in it
-          if (isSplitMode && !wasSplitMode) {
-            fluxState.setLiveStateActive(true);
-            sendFluxConfigToIframe();
-            if (Object.keys(fluxState.getChangeSet()).length > 0) {
-              sendPageTemplateUpdate(hostChannel, fluxState);
-            }
-          } else if (!isSplitMode && wasSplitMode) {
-            fluxState.setLiveStateActive(false);
-          }
-          wasSplitMode = isSplitMode;
-        }
-      });
-    });
-    observer.observe(cmsContainer, {
-      attributes: true,
-      attributeFilter: ["class"]
-    });
-  }
-  // Watch for modal-open class on body element
-  const bodyElement = document.body;
-  if (bodyElement) {
-    const bodyObserver = new MutationObserver(mutations => {
-      mutations.forEach(mutation => {
-        if (mutation.type === "attributes" && mutation.attributeName === "class") {
-          const hasModalOpen = bodyElement.classList.contains("modal-open");
-          if (hasModalOpen) {
-            console.log("Modal opened");
-            console.log(fluxState);
-          } else {
-            this.setTimeout(() => {
-              console.log("Modal closed");
-              sendPageTemplateUpdate(hostChannel, fluxState);
-            }, 500);
-          }
-        }
-      });
-    });
-    bodyObserver.observe(bodyElement, {
-      attributes: true,
-      attributeFilter: ["class"]
-    });
-  }
-  entwine("flux", function ($) {
-    $("[fx-key]").entwine({
-      onmatch: function (event) {
-        var self = $(this);
-        let element = self[0];
-        const bindKey = element.getAttribute("fx-key");
-        const bindEvent = element.getAttribute("fx-event");
-        const proxyElement = element.getAttribute("fx-proxy");
-        const owner = element.getAttribute("fx-owner") ?? null;
-        const type = element.getAttribute("fx-type") ?? null;
-        // Watch for file upload / react dropdown changes
-        if (proxyElement) {
-          const proxyElementType = element.getAttribute("fx-proxy-type");
-          switch (proxyElementType) {
-            case "document":
-              element = document.querySelector(proxyElement);
-              break;
-            case "previousElementSibling":
-              element = element.previousElementSibling;
-              break;
-            case "default":
-            case "element":
-            case "self":
-            default:
-              element = element.querySelector(proxyElement);
-              break;
-          }
-          let previousValue = null;
-          let isFirstRun = true;
-          const observer = new MutationObserver(mutations => {
-            const proxiedElement = element.querySelector(proxyElement);
-            if (!proxiedElement) {
-              return;
-            }
-            const currentValue = proxiedElement.value || proxiedElement.getAttribute("value") || "";
-            if (isFirstRun) {
-              previousValue = currentValue;
-              isFirstRun = false;
-              return;
-            }
-            if (currentValue !== previousValue) {
-              previousValue = currentValue;
-              fluxState.updateField(bindKey, currentValue, {
-                owner: owner
-              });
-              owner ? sendBlockUpdate(hostChannel, fluxState, owner) : sendPageTemplateUpdate(hostChannel, fluxState);
-            }
-          });
-          observer.observe(element, {
-            attributes: true,
-            attributeFilter: ["value"],
-            childList: true,
-            subtree: true,
-            characterData: false
-          });
-          return;
-        }
-        if (!element) return;
-        if (element.tagName === "TEXTAREA" && type === "HTML") {
-          var editor = tinymce.get(element.id);
-          if (editor) {
-            editor.on("keyup", function () {
-              document.querySelector(".flux-refresh__button").classList.toggle("hidden", false);
-              // @TODO this is a good case for a 'patchUpdate'
-              // where instead of generating the entire HTML, it sends a patch to the specific binding key
-              // This would handle
-              hostChannel.broadcastMessage({
-                type: "textUpdate",
-                key: bindKey,
-                owner: owner,
-                event: bindEvent,
-                value: editor.getContent()
-              });
-            });
-          }
-        }
-        element.addEventListener(bindEvent, listenerEvent => {
-          let event, value, type;
-          if (bindEvent === "keyup") {
-            value = listenerEvent.target.value;
-            if (element.getAttribute("fx-event-type") === "templateUpdate") {
-              type = "HTML";
-            } else if (value.length < 1) type = "HTML";else type = "Text";
-          }
-          if (bindEvent === "click") {
-            value = listenerEvent.target.checked;
-            type = "HTML";
-          }
-          if (bindEvent === "change") {
-            value = listenerEvent.target.value || listenerEvent.target.checked;
-            type = "HTML";
-          }
-          fluxState.updateField(bindKey, value, {
-            type: type,
-            owner: owner
-          });
-          if (!fluxState.getIsActive()) {
-            return;
-          }
-          if (type === "Text") {
-            hostChannel.broadcastMessage({
-              type: "textUpdate",
-              key: bindKey,
-              owner: owner,
-              event: bindEvent,
-              value
-            });
-            return;
-          }
-          if (owner) {
-            sendBlockUpdate(hostChannel, fluxState, owner);
-          } else {
-            sendPageTemplateUpdate(hostChannel, fluxState);
-          }
-        });
-      }
-    });
-    $("[fx-proxy]").entwine({
-      onmatch: function (event) {
-        var self = $(this);
-        let proxiedElement = self[0];
-        console.log(proxiedElement);
-        const parentElement = proxiedElement.closest("[fx-key]");
-        const bindKey = parentElement.getAttribute("fx-key");
-        const bindEvent = parentElement.getAttribute("fx-event");
-        const proxyElement = parentElement.getAttribute("fx-proxy");
-        const owner = parentElement.getAttribute("fx-owner") ?? null;
-        const type = parentElement.getAttribute("fx-type") ?? null;
-        const observer = new MutationObserver(mutations => {
-          if (!proxiedElement) {
-            return;
-          }
-          const currentValue = proxiedElement.value || proxiedElement.getAttribute("value") || "";
-          let previousValue = null;
-          let isFirstRun = false;
-          if (currentValue !== previousValue) {
-            previousValue = currentValue;
-            fluxState.updateField(bindKey, currentValue, {
-              owner: owner
-            });
-            owner ? sendBlockUpdate(hostChannel, fluxState, owner) : sendPageTemplateUpdate(hostChannel, fluxState);
-          }
-        });
-        observer.observe(proxiedElement, {
-          attributes: true,
-          attributeFilter: ["value"],
-          childList: true,
-          subtree: true,
-          characterData: false
-        });
-      }
-    });
-    $(".flux-refresh__button").entwine({
-      onclick: function (event) {
-        var self = $(this);
-        let element = self[0];
-        sendPageTemplateUpdate(hostChannel, fluxState);
-        element.classList.toggle("hidden", true);
-      }
-    });
-  });
+  const coordinator = new FluxHostCoordinator_1.default(window.location.origin, window.jQuery);
+  coordinator.initialize();
 });
+
+/***/ }),
+
+/***/ "./client/core/FluxDirective.ts":
+/*!**************************************!*\
+  !*** ./client/core/FluxDirective.ts ***!
+  \**************************************/
+/***/ (function(__unused_webpack_module, exports) {
+
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.fromElement = fromElement;
+exports.getElementValue = getElementValue;
+function fromElement(el) {
+  const key = el.getAttribute('fx-key');
+  if (!key) return null;
+  return {
+    element: el,
+    key,
+    event: el.getAttribute('fx-event'),
+    owner: el.getAttribute('fx-owner'),
+    type: el.getAttribute('fx-type'),
+    proxySelector: el.getAttribute('fx-proxy'),
+    proxyType: el.getAttribute('fx-proxy-type'),
+    collectSelector: el.getAttribute('fx-collect')
+  };
+}
+function getElementValue(el) {
+  return el.value ?? el.getAttribute('value') ?? '';
+}
 
 /***/ }),
 

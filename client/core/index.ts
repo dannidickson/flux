@@ -5,23 +5,15 @@
  * Delibrate repeatition of functionality
  */
 
-declare global {
-    interface Window {
-        FluxConfig?: {
-            Segments: Array<{
-                Type: 'Page' | 'Element';
-                ID: string | number;
-                ClassName: string;
-                owner?: string;
-            }>;
-            ChangeSet: Record<string, Record<string, any>>;
-            Events: any[];
-        };
-    }
-}
-
 import DOMPurify from "dompurify";
 import { logger } from "./logger";
+import { FluxEvent, type FluxConfigStructure } from "../types/flux.interface";
+
+declare global {
+    interface Window {
+        FluxConfig?: FluxConfigStructure;
+    }
+}
 
 const API_ENDPOINT = "/flux/api";
 

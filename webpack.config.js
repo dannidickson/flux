@@ -9,7 +9,8 @@ const PATHS = {
   styles: Path.resolve('client/styles'),
   cms: Path.resolve('client/cms-live-updates'),
   core: Path.resolve('client/core'),
-  bind: Path.resolve('client/bind'),
+  channels: Path.resolve('client/channels'),
+  lux: Path.resolve('client/lux'),
 };
 
 const config = [
@@ -18,8 +19,8 @@ const config = [
     const frontendConfig = new JavascriptWebpackConfig('flux', PATHS)
       .setEntry({
         frontend: `${PATHS.core}/index.ts`,
-        '/bind/host': `${PATHS.bind}/HostChannel.ts`,
-        '/bind/frame': `${PATHS.bind}/FrameChannel.ts`,
+        '/channels/host': `${PATHS.channels}/HostChannel.ts`,
+        '/channels/frame': `${PATHS.channels}/FrameChannel.ts`,
         'silverstripe-cms/host': `${PATHS.cms}/host.ts`,
         'silverstripe-cms/frame': `${PATHS.cms}/frame.ts`,
       })
@@ -27,7 +28,7 @@ const config = [
     // Add TypeScript support
     frontendConfig.module.rules.push({
       test: /\.(ts|tsx)$/,
-      include: [PATHS.core, PATHS.bind, PATHS.cms],
+      include: [PATHS.core, PATHS.channels, PATHS.cms, PATHS.lux],
       use: [
         {
           loader: 'babel-loader',

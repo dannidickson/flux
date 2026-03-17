@@ -19,10 +19,15 @@ SilverStripe\Forms\OptionsetField:
   extensions:
     FluxOptionsetFieldExtension: Flux\Extension\Forms\OptionsetFieldExtension
 
-# Add SingleSelectField extension when you have the class name
+SilverStripe\Forms\CheckboxSetField:
+  extensions:
+    FluxCheckboxSetFieldExtension: Flux\Extension\Forms\CheckboxSetFieldExtension
+
+
 SilverStripe\Forms\SingleSelectField:
   extensions:
     FluxSingleSelectFieldExtension: Flux\Extension\Forms\SingleSelectFieldExtension
+
 
 SilverStripe\Forms\HTMLEditor\HTMLEditorField:
   extensions:

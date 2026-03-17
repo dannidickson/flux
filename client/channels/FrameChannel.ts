@@ -49,7 +49,6 @@ export default class FrameChannel {
      */
     private defaultMessageHandler(event: MessageEvent) {
         logger.log('Message called doing nothing', event);
-
     }
 
 }

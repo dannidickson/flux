@@ -1,11 +1,25 @@
-interface FluxFieldBind {
+export interface FluxConfigSegment {
+    Type: 'Page' | 'Element';
+    ClassName: string;
+    ID: string | number;
+    owner?: string;
+}
+
+export interface FluxConfigStructure {
+    Segments: FluxConfigSegment[];
+    Fields: Record<string, Record<string, any>>;
+    ChangeSet: Record<string, Record<string, any>>;
+    Events: any[];
+}
+
+export interface FluxFieldBind {
     bind: string;
     key: string;
     type: string;
 }
 
-interface FluxBroadCastMessage {
-    type: string;
+export interface FluxBroadCastMessage {
+    type: 'configUpdate' | 'pageTemplateUpdate' | 'blockUpdate' | 'textUpdate';
     html?: string;
     key?: string;
     event?: string;
@@ -16,8 +30,7 @@ interface FluxBroadCastMessage {
     targetOwner?: string;
 }
 
-
-interface FluxEvent {
+export interface FluxEvent {
     target: string;
     event: string;
     endpoint?: string;
@@ -28,28 +41,28 @@ interface FluxEvent {
     replace?: "innerHTML" | "outerHTML" | InsertPosition;
 }
 
-interface FluxRequest {
+export interface FluxRequest {
     endpoint: string;
     method: string;
 }
 
-interface FluxComponentState {
+export interface FluxComponentState {
     [key: string]: any;
 }
 
-interface FluxComponentResponse {
+export interface FluxComponentResponse {
     html: string;
     state: FluxComponentState;
     componentId: string;
 }
 
-interface FluxComponentConfig {
+export interface FluxComponentConfig {
     componentName: string;
     initialState?: FluxComponentState;
     rootElement?: HTMLElement;
 }
 
-interface FluxComponentInstance {
+export interface FluxComponentInstance {
     id: string;
     name: string;
     state: FluxComponentState;

@@ -86,7 +86,6 @@ class FluxLeftAndMainExtension extends Extension
                 LiteralField::create('FluxCMSUIPlaceholder', $fluxCMSUI)
             );
         }
-        // Custom logic to modify the CMS main edit form can be added here
     }
 
 }
