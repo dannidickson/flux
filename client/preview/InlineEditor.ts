@@ -2,7 +2,7 @@ import { logger } from '../core/logger';
 import { registerFluxElements } from './FluxElements';
 
 const TEXT_SELECTOR = '[fx-key][fx-type="Text"]';
-const FILE_SELECTOR = '[fx-key][fx-type="FileUpload"]';
+const FILE_SELECTOR = '[fx-key][fx-type="UploadField"]';
 const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
 
 export const activeEditingFields = new Set<string>();

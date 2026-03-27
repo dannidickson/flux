@@ -599,7 +599,7 @@ exports.initInlineEditing = initInlineEditing;
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const FluxElements_1 = __webpack_require__(/*! ./FluxElements */ "./client/preview/FluxElements.ts");
 const TEXT_SELECTOR = '[fx-key][fx-type="Text"]';
-const FILE_SELECTOR = '[fx-key][fx-type="FileUpload"]';
+const FILE_SELECTOR = '[fx-key][fx-type="UploadField"]';
 const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
 exports.activeEditingFields = new Set();
 const openBlocks = new Set();
