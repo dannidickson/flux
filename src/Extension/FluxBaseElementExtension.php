@@ -21,4 +21,5 @@ class FluxBaseElementExtension extends Extension
         /* @var BaseElement */
         return sprintf('#%s', $this->getOwner()->getAnchor());
     }
+
 }

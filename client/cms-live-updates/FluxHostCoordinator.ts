@@ -10,7 +10,7 @@ const BLOCK_COOLDOWN_MS = 500;
 
 function createCooldown(ms: number) {
     const last = new Map<string, number>();
-    return (key = 'default') => {
+    return (key = "default") => {
         const now = Date.now();
         if (now - (last.get(key) ?? 0) < ms) return false;
         last.set(key, now);
@@ -24,6 +24,7 @@ export default class FluxHostCoordinator {
     private readonly pageReady = createCooldown(PAGE_COOLDOWN_MS);
     private readonly blockReady = createCooldown(BLOCK_COOLDOWN_MS);
     private observers: MutationObserver[] = [];
+    private suppressModalUpdate: boolean = false;
 
     constructor(
         private url: string,
@@ -37,14 +38,18 @@ export default class FluxHostCoordinator {
         this.setupIframeListeners();
         this.setupSplitModeObserver();
         this.setupModalObserver();
+
         this.setupFluxBindings();
     }
 
     private setupIframeListeners(): void {
-        const iframe = document.querySelector(CMS_FRAME) as HTMLIFrameElement;
-        if (iframe) {
-            iframe.addEventListener("load", () => this.sendFluxConfigToIframe());
-        }
+        this.hostChannel.setOnFrameReady(() => {
+            this.sendFluxConfigToIframe();
+
+            if (Object.keys(this.fluxState.getChangeSet()).length > 0) {
+                this.sendPageTemplateUpdate();
+            }
+        });
     }
 
     private sendFluxConfigToIframe(): void {
@@ -56,13 +61,21 @@ export default class FluxHostCoordinator {
         }
     }
 
-    private observeClassAttribute(element: Element, callback: (el: HTMLElement) => void): MutationObserver {
+    private observeClassAttribute(
+        element: Element,
+        callback: (el: HTMLElement) => void,
+    ): MutationObserver {
         const observer = new MutationObserver((mutations) => {
-            mutations.forEach((m) => {
-                if (m.attributeName === "class") callback(m.target as HTMLElement);
+            mutations.forEach((mutation) => {
+                if (mutation.attributeName === "class") {
+                    callback(mutation.target as HTMLElement);
+                }
             });
         });
-        observer.observe(element, { attributes: true, attributeFilter: ["class"] });
+        observer.observe(element, {
+            attributes: true,
+            attributeFilter: ["class"],
+        });
         return observer;
     }
 
@@ -70,14 +83,18 @@ export default class FluxHostCoordinator {
         const cmsContainer = document.querySelector(".cms-container");
         if (!cmsContainer) return;
 
-        let wasSplitMode = cmsContainer.classList.contains("cms-container--split-mode");
+        let wasSplitMode = cmsContainer.classList.contains(
+            "cms-container--split-mode",
+        );
 
         if (wasSplitMode) {
             this.fluxState.setLiveStateActive(true);
         }
 
         const observer = this.observeClassAttribute(cmsContainer, (target) => {
-            const isSplitMode = target.classList.contains("cms-container--split-mode");
+            const isSplitMode = target.classList.contains(
+                "cms-container--split-mode",
+            );
 
             if (isSplitMode && !wasSplitMode) {
                 this.fluxState.setLiveStateActive(true);
@@ -104,6 +121,11 @@ export default class FluxHostCoordinator {
                 logger.log("Modal opened");
             } else {
                 window.setTimeout(() => {
+                    if (this.suppressModalUpdate) {
+                        logger.log("Modal closed — skipping update (TinyMCE handled)");
+                        this.suppressModalUpdate = false;
+                        return;
+                    }
                     logger.log("Modal closed");
                     this.sendPageTemplateUpdate();
                 }, 500);
@@ -158,7 +180,10 @@ export default class FluxHostCoordinator {
         }
 
         try {
-            const response = await this.fluxState.sendBlockUpdate(API_ENDPOINT, owner);
+            const response = await this.fluxState.sendBlockUpdate(
+                API_ENDPOINT,
+                owner,
+            );
 
             if (!response.trusted) {
                 logger.warn("Block update returned unsafe html");
@@ -174,7 +199,10 @@ export default class FluxHostCoordinator {
 
             return response;
         } catch (error) {
-            logger.warn("Block update failed, falling back to full page update:", error);
+            logger.warn(
+                "Block update failed, falling back to full page update:",
+                error,
+            );
             this.sendPageTemplateUpdate();
         }
     }
@@ -189,12 +217,43 @@ export default class FluxHostCoordinator {
         }
     }
 
+    async sendPatchUpdate(key: string, value: string, owner: string | null): Promise<void> {
+        if (!this.fluxState.getIsActive()) return;
+
+        this.suppressModalUpdate = true;
+
+        try {
+            const response = await fetch(`${API_ENDPOINT}/shortCodesFragmentPatch`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ key, value, owner }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Patch update failed: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            this.hostChannel.broadcastMessage({
+                type: "patchTemplateUpdate",
+                key: data.key,
+                owner: data.owner,
+                value: data.html,
+            });
+        } catch (error) {
+            logger.warn("Patch update failed, falling back to full update:", error);
+            this.triggerUpdate(owner);
+        }
+    }
+
     private setupFluxBindings(): void {
         const bindingManager = new FluxDirectiveManager(
             this.$,
             this.fluxState,
             (owner) => this.triggerUpdate(owner),
             this.hostChannel,
+            (key, value, owner) => this.sendPatchUpdate(key, value, owner),
         );
 
         bindingManager.initialize();

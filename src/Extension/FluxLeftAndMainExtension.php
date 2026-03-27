@@ -2,14 +2,12 @@
 
 namespace Flux\Extension;
 
+use DNADesign\Elemental\Models\BaseElement;
 use Flux\Service\FluxConfigService;
 use SilverStripe\Core\Extension;
-use SilverStripe\Forms\DatalessField;
-use SilverStripe\Forms\FormAction;
 use SilverStripe\Forms\LiteralField;
 use SilverStripe\Security\Security;
 use SilverStripe\View\Requirements;
-use SilverStripe\Forms\Tip;
 
 /**
  * Extension for LeftAndMain (CMS admin controller)
@@ -44,14 +42,19 @@ class FluxLeftAndMainExtension extends Extension
         if ($recordID && $modelClass && class_exists($modelClass)) {
             $record = $modelClass::get()->byID($recordID);
             if ($record) {
-                // Register the record as the page
+                if ($record instanceof BaseElement) {
+                    $page = $record->getPage();
+                    if (!$page || !$page->exists()) {
+                        return;
+                    }
+                    $record = $page;
+                }
+
                 FluxConfigService::setPage($record);
 
-                // Register elements if this record has them
                 if ($record->hasMethod('ElementalArea') && $record->ElementalArea()->exists()) {
                     FluxConfigService::addElements($record->ElementalArea()->Elements());
                 }
-
             }
         }
     }

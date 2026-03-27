@@ -4,6 +4,7 @@ namespace Flux\Service;
 
 use Flux\Repository\FluxRepository;
 use SilverStripe\Core\ClassInfo;
+use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\ORM\DataObject;
 
 /**
@@ -26,6 +27,13 @@ class FluxConfigService
     private static $fields = [];
 
     /**
+     * Relation fields grouped by ClassName → relation name
+     * Populated from flux_relation_fields config
+     * @var array
+     */
+    private static $relationFields = [];
+
+    /**
      * Set the page data for FluxConfig and collect its fields
      * Page is added as the first segment
      *
@@ -41,8 +49,8 @@ class FluxConfigService
 
         self::addSegment($segmentData);
 
-        // Collect flux fields from the page
         self::collectFieldsFromDataObject($page);
+        self::collectRelationFieldsFromDataObject($page);
     }
 
     /**
@@ -66,8 +74,8 @@ class FluxConfigService
 
         self::addSegment($segmentData);
 
-        // Collect flux fields from the element
         self::collectFieldsFromDataObject($element);
+        self::collectRelationFieldsFromDataObject($element);
     }
 
     /**
@@ -101,11 +109,130 @@ class FluxConfigService
     }
 
     /**
-     * Collect flux fields from a DataObject
-     * Groups fields by ClassName for better organization
-     *
-     * @param DataObject $dataObject
+     * Collect relation field configs from a DataObject's flux_relation_fields config.
      */
+    private static function collectRelationFieldsFromDataObject(DataObject $dataObject): void
+    {
+        $fluxRelationFields = $dataObject->config()->get('flux_relation_fields');
+
+        if (!$fluxRelationFields || !$dataObject->hasMethod('getCMSFields')) {
+            return;
+        }
+
+        $className = get_class($dataObject);
+
+        $cmsGridFields = [];
+        foreach ($dataObject->getCMSFields()->dataFields() as $field) {
+            if ($field instanceof GridField) {
+                $cmsGridFields[$field->getName()] = $field;
+            }
+        }
+
+        foreach ($fluxRelationFields as $relationName => $config) {
+            $gridField = $cmsGridFields[$relationName] ?? null;
+
+            if (!$gridField) {
+                continue;
+            }
+
+            if (is_string($config)) {
+                $selector = $config;
+                $explicitFields = null;
+            } else {
+                $selector = $config['DOMSelector'] ?? null;
+                $explicitFields = $config['Fields'] ?? null;
+            }
+
+            if (!$selector) {
+                continue;
+            }
+
+            $actions = [];
+            foreach ($gridField->getConfig()->getComponents() as $component) {
+                $componentClass = get_class($component);
+                if (str_contains($componentClass, 'GridFieldEditButton')) {
+                    $actions[] = 'edit';
+                } elseif (str_contains($componentClass, 'GridFieldArchiveAction')) {
+                    $actions[] = 'archive';
+                } elseif (str_contains($componentClass, 'GridFieldDeleteAction')) {
+                    $actions[] = 'delete';
+                }
+            }
+
+            if (empty($actions)) {
+                continue;
+            }
+
+            $fields = self::resolveRelationFields($dataObject, $relationName, $explicitFields);
+            $ids = array_values($dataObject->$relationName()->column('ID'));
+
+            if (!isset(self::$relationFields[$className])) {
+                self::$relationFields[$className] = [];
+            }
+
+            self::$relationFields[$className][$relationName] = [
+                'selector' => $selector,
+                'actions' => $actions,
+                'ids' => $ids,
+                'Fields' => $fields,
+            ];
+        }
+    }
+
+    /**
+     * Resolve child field bindings for a relation.
+     */
+    private static function resolveRelationFields(DataObject $dataObject, string $relationName, ?array $explicitFields): array
+    {
+        $relatedClass = self::resolveRelationClass($dataObject, $relationName);
+
+        if (!$relatedClass) {
+            return [];
+        }
+
+        $relatedSingleton = singleton($relatedClass);
+        $fieldMap = $explicitFields ?? ($relatedSingleton->config()->get('flux_fields') ?? []);
+
+        $fields = [];
+        foreach ($fieldMap as $fieldName => $bind) {
+            $type = FluxRepository::getFluxDataType($fieldName, $relatedSingleton->config());
+            if (!$type) {
+                continue;
+            }
+            $fields[$fieldName] = ['bind' => $bind, 'type' => $type];
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Resolve the related DataObject class for a has_many or many_many relation.
+     */
+    private static function resolveRelationClass(DataObject $dataObject, string $relationName): ?string
+    {
+        $config = $dataObject->config();
+        $relations = array_merge(
+            $config->get('has_many') ?? [],
+            $config->get('many_many') ?? [],
+        );
+
+        $relatedClass = $relations[$relationName] ?? null;
+
+        if (is_array($relatedClass)) {
+            $relatedClass = $relatedClass['through'] ?? null;
+        }
+
+        if (!$relatedClass) {
+            return null;
+        }
+
+        if (str_contains($relatedClass, '.')) {
+            $relatedClass = explode('.', $relatedClass)[0];
+        }
+
+        return class_exists($relatedClass) ? $relatedClass : null;
+    }
+
     private static function collectFieldsFromDataObject(DataObject $dataObject): void
     {
         $config = $dataObject->config();
@@ -117,7 +244,6 @@ class FluxConfigService
 
         $className = get_class($dataObject);
 
-        // Initialize array for this class if not exists
         if (!isset(self::$fields[$className])) {
             self::$fields[$className] = [];
         }
@@ -129,7 +255,6 @@ class FluxConfigService
                 continue;
             }
 
-            // Add field under this ClassName (owner is now at element level)
             self::$fields[$className][$key] = [
                 'key' => $key,
                 'bind' => $value,
@@ -149,6 +274,7 @@ class FluxConfigService
         return [
             'Segments' => self::$segments,
             'Fields' => self::$fields,
+            'RelationFields' => self::$relationFields,
             'ChangeSet' => (object) [],
             'Events' => [],
         ];
@@ -172,6 +298,7 @@ class FluxConfigService
     {
         self::$segments = [];
         self::$fields = [];
+        self::$relationFields = [];
     }
 
     /**

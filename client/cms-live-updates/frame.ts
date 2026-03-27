@@ -4,6 +4,7 @@ import Idiomorph from "idiomorph";
 import { logger } from "../core/logger";
 import type { FluxBroadCastMessage, FluxConfigStructure } from "../types/flux.interface";
 import { applyConfig } from "../core/FluxDirectives";
+import { initInlineEditing, activeEditingFields } from "../preview/InlineEditor";
 
 declare global {
     interface Window {
@@ -16,6 +17,18 @@ declare global {
 
 const beforeNodeMorphed = (oldNode: any) => oldNode.tagName !== 'SCRIPT';
 
+function fxSelector(msg: FluxBroadCastMessage): string {
+    if (msg.owner) {
+        return `[fx-owner="${msg.owner}"][fx-key="${msg.key}"]`;
+    }
+    return `[fx-key="${msg.key}"]`;
+}
+
+function isActivelyEditing(msg: FluxBroadCastMessage): boolean {
+    const editingId = `${msg.key}|${msg.owner ?? ''}`;
+    return activeEditingFields.has(editingId);
+}
+
 const frame = new FrameChannel();
 
 frame.onRecievedMessage = (event) => {
@@ -26,6 +39,7 @@ frame.onRecievedMessage = (event) => {
         logger.log('FluxConfig received from host:', window.FluxConfig);
 
         applyConfig(window.FluxConfig!);
+        initInlineEditing(frame.channel);
         return;
     }
 
@@ -35,16 +49,10 @@ frame.onRecievedMessage = (event) => {
 window.addEventListener('DOMContentLoaded', () => {
     if (window.FluxConfig) {
         applyConfig(window.FluxConfig);
+        initInlineEditing(frame.channel);
     }
 });
 
-/**
- * Applies the returned HTML to the document
- *
- * @TODO
- *  move this into the `core/index`
- *  Allow developer option for the scripts to be reloaded if they want
- */
 const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
     logger.log('Flux message received:', fluxBroadCastMessage);
 
@@ -60,8 +68,7 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
         const parser = new DOMParser();
         const newDoc = parser.parseFromString(fluxBroadCastMessage.html, 'text/html');
 
-        Idiomorph.morph(document.documentElement, newDoc.documentElement, {
-            head: { style: 'morph' },
+        Idiomorph.morph(document.body, newDoc.body, {
             callbacks: { beforeNodeMorphed },
         });
 
@@ -69,6 +76,7 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
         logger.timeEnd('morph');
 
         applyConfig(window.FluxConfig!);
+        initInlineEditing(frame.channel);
         return;
     }
 
@@ -97,25 +105,62 @@ const updateElement = (fluxBroadCastMessage: FluxBroadCastMessage) => {
         logger.timeEnd('blockMorph');
 
         applyConfig(window.FluxConfig!);
+        initInlineEditing(frame.channel);
+        return;
+    }
+
+    if (fluxBroadCastMessage.type === "patchTemplateUpdate" && fluxBroadCastMessage.key) {
+        const selector = fxSelector(fluxBroadCastMessage);
+        const element = document.querySelector(selector);
+
+        if (!element) {
+            logger.warn(`patchTemplateUpdate: element not found for ${selector}`);
+            return;
+        }
+
+        element.innerHTML = fluxBroadCastMessage.value || ' ';
+        logger.log(`Patched element ${selector}`);
+        return;
+    }
+
+    if ((fluxBroadCastMessage.type === "richTextUpdate" || fluxBroadCastMessage.type === "richTextPatch") && fluxBroadCastMessage.key) {
+        const selector = fxSelector(fluxBroadCastMessage);
+        const element = document.querySelector(selector);
+
+        if (!element) {
+            logger.warn(`${fluxBroadCastMessage.type}: element not found for ${selector}`);
+            return;
+        }
+
+        if (isActivelyEditing(fluxBroadCastMessage)) {
+            logger.log(`Skipping ${fluxBroadCastMessage.type} for active inline edit [fx-key="${fluxBroadCastMessage.key}"]`);
+            return;
+        }
+
+        Idiomorph.morph(element, fluxBroadCastMessage.value || ' ', {
+            morphStyle: 'innerHTML',
+            callbacks: { beforeNodeMorphed },
+        });
+
+        logger.log(`Morphed ${fluxBroadCastMessage.type} [fx-key="${fluxBroadCastMessage.key}"]`);
         return;
     }
 
     if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-        logger.log(fluxBroadCastMessage);
-
-        const parts = fluxBroadCastMessage.owner
-            ? [`${fluxBroadCastMessage.owner}`, `[fx-key="${fluxBroadCastMessage.key}"]`]
-            : [`[fx-key="${fluxBroadCastMessage.key}"]`];
-
-        const element = document.querySelector(parts.join(' '));
+        const selector = fxSelector(fluxBroadCastMessage);
+        const element = document.querySelector(selector);
 
         if (!element) {
-            logger.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
+            logger.warn(`textUpdate: element not found for ${selector}`);
             return;
         }
 
-        // @ts-ignore
-        element.innerHTML = fluxBroadCastMessage.value;
+        if (isActivelyEditing(fluxBroadCastMessage)) {
+            logger.log(`Skipping textUpdate for active inline edit [fx-key="${fluxBroadCastMessage.key}"]`);
+            return;
+        }
+
+        element.innerHTML = fluxBroadCastMessage.value || ' ';
         logger.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
         return;
     }

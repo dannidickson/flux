@@ -1,7 +1,10 @@
 import HostChannel from "../channels/HostChannel";
-import { logger } from "../core/logger";
 import FluxLiveState from "./FluxLiveState";
-import { fromElement, getElementValue, type FluxDirective } from "../core/FluxDirective";
+import {
+    fromElement,
+    getElementValue,
+    type FluxDirective,
+} from "../core/FluxDirective";
 
 export default class FluxDirectiveManager {
     constructor(
@@ -9,6 +12,11 @@ export default class FluxDirectiveManager {
         private fluxState: FluxLiveState,
         private onTriggerUpdate: (owner: string | null) => void,
         private hostChannel: HostChannel,
+        private onPatchUpdate: (
+            key: string,
+            value: string,
+            owner: string | null,
+        ) => void,
     ) {}
 
     initialize(): void {
@@ -37,44 +45,69 @@ export default class FluxDirectiveManager {
 
                 if (element.tagName === "TEXTAREA" && binding.type === "HTML") {
                     manager.setupTinyMCEListener(element, binding);
+                    return;
                 }
 
-                element.addEventListener(binding.event as string, (listenerEvent: Event) => {
-                    let value: any;
-                    let type: string;
+                let previousValue: string =
+                    (element as HTMLInputElement).value ?? "";
 
-                    if (binding.collectSelector) {
-                        value = Array.from(element.querySelectorAll(binding.collectSelector))
-                            .map((el) => (el as HTMLInputElement).value);
-                        type = "HTML";
-                    } else {
-                        ({ value, type } = manager.extractEventData(
-                            listenerEvent,
-                            binding.event,
-                            element,
-                        ));
-                    }
+                element.addEventListener(
+                    binding.event as string,
+                    (listenerEvent: Event) => {
+                        let value: any;
+                        let type: string;
 
-                    manager.fluxState.updateField(binding.key, value, {
-                        type,
-                        owner: binding.owner ?? undefined,
-                    });
+                        if (binding.collectSelector) {
+                            value = Array.from(
+                                element.querySelectorAll(
+                                    binding.collectSelector,
+                                ),
+                            ).map((el) => (el as HTMLInputElement).value);
+                            type = "HTML";
+                        } else {
+                            ({ value, type } = manager.extractEventData(
+                                listenerEvent,
+                                binding.event,
+                                element,
+                            ));
+                        }
 
-                    if (!manager.fluxState.getIsActive()) return;
+                        /**
+                         * Trigger a templateUpdate when a field changes
+                         * from being empty to including text
+                         */
+                        if (
+                            type === "Text" &&
+                            previousValue.trim().length === 0 &&
+                            String(value).trim().length > 0 &&
+                            !manager.hostChannel.isInlineEditInProgress
+                        ) {
+                            type = "HTML";
+                        }
 
-                    if (type === "Text") {
-                        manager.hostChannel.broadcastMessage({
-                            type: "textUpdate",
-                            key: binding.key,
-                            owner: binding.owner,
-                            event: binding.event,
-                            value,
+                        previousValue = String(value);
+
+                        manager.fluxState.updateField(binding.key, value, {
+                            type,
+                            owner: binding.owner ?? undefined,
                         });
-                        return;
-                    }
 
-                    manager.onTriggerUpdate(binding.owner);
-                });
+                        if (!manager.fluxState.getIsActive()) return;
+
+                        if (type === "Text") {
+                            manager.hostChannel.broadcastMessage({
+                                type: "textUpdate",
+                                key: binding.key,
+                                owner: binding.owner,
+                                event: binding.event,
+                                value,
+                            });
+                            return;
+                        }
+
+                        manager.onTriggerUpdate(binding.owner);
+                    },
+                );
             },
         });
     }
@@ -92,24 +125,30 @@ export default class FluxDirectiveManager {
         });
     }
 
-    /**
-     * Observe a proxy container found via [fx-key]'s fx-proxy attribute.
-     * Tracks first-run to avoid triggering on the initial mutation.
-     */
-    private observeKeyProxyElement(element: HTMLElement, binding: FluxDirective): void {
+    private observeKeyProxyElement(
+        element: HTMLElement,
+        binding: FluxDirective,
+    ): void {
         let previousValue: string | null = null;
         let isFirstRun = true;
 
-        // For previousElementSibling (e.g. UploadField), the [fx-key] element is a leaf
-        // (the file input), and mutations happen inside its previous sibling (the holder div).
-        // Observe that sibling and query the proxy within it.
-        // For all other types, observe the field container itself.
-        const observeTarget: HTMLElement = binding.proxyType === "previousElementSibling"
-            ? (element.previousElementSibling as HTMLElement) ?? element
-            : element;
+        let observeTarget: HTMLElement = element;
+
+        if (binding.proxyType === "previousElementSibling") {
+            observeTarget =
+                (element.previousElementSibling as HTMLElement) ?? element;
+        } else if (binding.proxyType === "nextElementSibling") {
+            observeTarget =
+                (element.nextElementSibling as HTMLElement) ?? element;
+        }
 
         const observer = new MutationObserver(() => {
-            const proxiedElement = observeTarget.querySelector(binding.proxySelector!) as HTMLElement;
+            const proxiedElement =
+                binding.proxyType === "nextElementSibling"
+                    ? element
+                    : (observeTarget.querySelector(
+                          binding.proxySelector!,
+                      ) as HTMLElement);
 
             if (!proxiedElement) return;
 
@@ -137,24 +176,83 @@ export default class FluxDirectiveManager {
         });
     }
 
-    private setupTinyMCEListener(element: HTMLElement, binding: FluxDirective): void {
+    private setupTinyMCEListener(
+        element: HTMLElement,
+        binding: FluxDirective,
+    ): void {
         const editor = (window as any).tinymce?.get(element.id);
 
-        if (editor) {
-            editor.on("keyup", () => {
-                document
-                    .querySelector(".flux-refresh__button")
-                    ?.classList.toggle("hidden", false);
+        if (!editor) return;
+        let previousContent: string = editor.getContent() ?? "";
+        const sendTextUpdate = () => {
+            const currentEditor = (window as any).tinymce.get(element.id);
 
+            if (!currentEditor.hasFocus()) return;
+
+            const content = currentEditor.getContent();
+            if (content === previousContent) return;
+            previousContent = content;
+
+            // When shortcodes are present, use the editor body's innerHTML instead
+            // — TinyMCE renders shortcodes as real DOM elements that morph smoothly.
+            if (this.containsShortcode(content)) {
                 this.hostChannel.broadcastMessage({
-                    type: "textUpdate",
+                    type: "richTextUpdate",
                     key: binding.key,
                     owner: binding.owner,
-                    event: binding.event,
-                    value: editor.getContent(),
+                    value: currentEditor.getBody().innerHTML,
                 });
+                return;
+            }
+
+            this.hostChannel.broadcastMessage({
+                type: "textUpdate",
+                key: binding.key,
+                owner: binding.owner,
+                event: binding.event,
+                value: content,
             });
-        }
+        };
+
+        const sendPatchUpdate = () => {
+            const currentEditor = (window as any).tinymce.get(element.id);
+
+            if (!currentEditor.hasFocus()) return;
+
+            const content = currentEditor.getContent();
+            if (content === previousContent) return;
+            previousContent = content;
+
+            document
+                .querySelector(".flux-refresh__button")
+                ?.classList.toggle("hidden", false);
+
+            this.fluxState.updateField(binding.key, content, {
+                type: "HTML",
+                owner: binding.owner ?? undefined,
+            });
+
+            this.hostChannel.broadcastMessage({
+                type: "richTextPatch",
+                key: binding.key,
+                owner: binding.owner,
+                value: content,
+            });
+            this.onPatchUpdate(binding.key, content, binding.owner);
+        };
+
+        editor.on("input", () => {
+            sendTextUpdate();
+        });
+        editor.on("Change", (e: any) => {
+            if (!e.originalEvent || e.originalEvent.type === "execcommand") {
+                sendPatchUpdate();
+            }
+        });
+    }
+
+    private containsShortcode(content: string): boolean {
+        return /\[[a-zA-Z_][\w]*\s[^\]]*\]/.test(content);
     }
 
     private extractEventData(

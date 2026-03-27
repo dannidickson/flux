@@ -182,9 +182,29 @@ class APIController extends Controller
 
     public function shortCodesFragmentPatch(HTTPRequest $request): HTTPResponse
     {
-        // Placeholder for future block update logic
-        return HTTPResponse::create(json_encode(['status' => 'Not implemented']), 501)
-            ->addHeader('Content-Type', 'application/json');
+        return Versioned::withVersionedMode(function () use ($request) {
+            Versioned::set_stage(Versioned::DRAFT);
+
+            $body = json_decode($request->getBody(), true);
+            $value = $body['value'] ?? '';
+
+            if (!$value) {
+                return HTTPResponse::create(json_encode(['error' => 'value is required']), 400)
+                    ->addHeader('Content-Type', 'application/json');
+            }
+
+            $html = \SilverStripe\View\Parsers\ShortcodeParser::get_active()->parse($value);
+
+            $response = [
+                'html' => $html,
+                'key' => $body['key'] ?? null,
+                'owner' => $body['owner'] ?? null,
+                'trusted' => true,
+            ];
+
+            return HTTPResponse::create(json_encode($response))
+                ->addHeader('Content-Type', 'application/json');
+        });
     }
 
     /**

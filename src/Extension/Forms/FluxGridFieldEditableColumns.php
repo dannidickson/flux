@@ -39,10 +39,9 @@ class FluxGridFieldEditableColumns extends BaseGridFieldEditableColumns
                         $fluxType = $componentType;
                     }
 
-                    // Apply flux attributes via the field's extension
                     $field->applyFluxAttributes($fieldName, $fluxBind, $fluxType);
-
-                    $field->setAttribute('fx-event-type', 'templateUpdate');
+                    $field->setAttribute('fx-owner', (string) $record->ID);
+                    $field->setAttribute('fx-event-type', 'textUpdate');
                 }
             }
         }

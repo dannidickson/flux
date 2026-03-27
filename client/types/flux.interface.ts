@@ -5,9 +5,17 @@ export interface FluxConfigSegment {
     owner?: string;
 }
 
+export interface FluxRelationFieldConfig {
+    selector: string;
+    actions: Array<'edit' | 'delete' | 'archive'>;
+    ids: number[];
+    Fields: Record<string, { bind: string; type: string }>;
+}
+
 export interface FluxConfigStructure {
     Segments: FluxConfigSegment[];
     Fields: Record<string, Record<string, any>>;
+    RelationFields: Record<string, Record<string, FluxRelationFieldConfig>>;
     ChangeSet: Record<string, Record<string, any>>;
     Events: any[];
 }
@@ -19,7 +27,7 @@ export interface FluxFieldBind {
 }
 
 export interface FluxBroadCastMessage {
-    type: 'configUpdate' | 'pageTemplateUpdate' | 'blockUpdate' | 'textUpdate';
+    type: 'configUpdate' | 'pageTemplateUpdate' | 'blockUpdate' | 'textUpdate' | 'patchTemplateUpdate' | 'richTextUpdate' | 'richTextPatch' | 'inlineEditUpdate' | 'fileUploadClick' | 'editBlockClick' | 'gridFieldAction';
     html?: string;
     key?: string;
     event?: string;
@@ -28,6 +36,7 @@ export interface FluxBroadCastMessage {
     changedFields?: Record<string, any>;
     targetKey?: string;
     targetOwner?: string;
+    action?: 'edit' | 'delete' | 'archive';
 }
 
 export interface FluxEvent {

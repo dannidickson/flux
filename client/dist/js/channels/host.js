@@ -86,18 +86,26 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 class HostChannel {
+  get isInlineEditInProgress() {
+    return this.inlineEditInProgress;
+  }
+  get frame() {
+    return document.querySelector(this.frameSelector);
+  }
   constructor(url, frameElement) {
+    this.onFrameReady = null;
+    this.inlineEditInProgress = false;
     this.channelType = "MessageChannel";
-    this.frame = document.querySelector(frameElement);
-    if (this.frame === null) {
+    this.frameSelector = frameElement;
+    if (!this.frame) {
       throw new Error(`iFrame cannot be found using ${frameElement}`);
     }
     this.createChannel();
-    // Listen for FRAME_READY signal from iframe (including reloads)
     this.readyHandler = event => {
       if (event.data.type === 'FRAME_READY' && event.origin === window.location.origin) {
         logger_1.logger.log("Frame ready - establishing channel");
         this.recreateChannel();
+        this.onFrameReady?.();
       }
     };
     window.addEventListener('message', this.readyHandler);
@@ -110,13 +118,10 @@ class HostChannel {
   }
   recreateChannel() {
     logger_1.logger.log("Recreating MessageChannel for iframe reload");
-    // Close old channel
     if (this.channelInstance) {
       this.channelInstance.port1.close();
     }
-    // Create new channel
     this.createChannel();
-    // Send new port to iframe
     this.sendPortToFrame();
   }
   sendPortToFrame() {
@@ -126,11 +131,172 @@ class HostChannel {
     // @ts-ignore
     this.frame.contentWindow.postMessage(message, window.location.origin, [this.channelInstance.port2]);
   }
-  recieveMessageFromFrame(event) {}
+  recieveMessageFromFrame(event) {
+    const data = event.data;
+    if (!data.type) {
+      logger_1.logger.warn("HostChannel received message without type:", data);
+    }
+    switch (data.type) {
+      case 'inlineEditUpdate':
+        this.handleInlineEditUpdate(data);
+        break;
+      case 'fileUploadClick':
+        this.handleFileUploadClick(data);
+        break;
+      case 'linkFieldClick':
+        this.handleLinkFieldClick(data);
+        break;
+      case 'editBlockClick':
+        this.handleEditBlockClick(data);
+        break;
+      case 'gridFieldAction':
+        this.handleGridFieldAction(data);
+        break;
+      default:
+        logger_1.logger.warn("HostChannel received unknown message type:", data.type);
+    }
+  }
+  handleInlineEditUpdate(data) {
+    const {
+      key,
+      value,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find input for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    // Use the native setter so React's controlled-input tracking stays in sync.
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, value);
+    } else {
+      input.value = value;
+    }
+    this.inlineEditInProgress = true;
+    input.dispatchEvent(new Event('input', {
+      bubbles: true
+    }));
+    input.dispatchEvent(new Event('keyup', {
+      bubbles: true
+    }));
+    this.inlineEditInProgress = false;
+  }
+  handleFileUploadClick(data) {
+    const {
+      key,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find upload field for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    const holder = input.previousElementSibling;
+    const btn = holder?.querySelector('.uploadfield-item__view-btn');
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: could not find .uploadfield-item__view-btn for fx-key="${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  handleLinkFieldClick(data) {
+    const {
+      key,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find link field for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    const container = input.nextElementSibling;
+    const btn = container?.querySelector('.link-picker__button');
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: could not find .link-picker__button for fx-key="${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  handleEditBlockClick(data) {
+    const segments = window.FluxConfig?.Segments ?? [];
+    const elementSegments = segments.filter(s => s.Type === 'Element');
+    const index = elementSegments.findIndex(s => s.owner === data.owner);
+    if (index === -1) {
+      logger_1.logger.warn(`HostChannel: no Element segment found for owner "${data.owner}"`);
+      return;
+    }
+    const el = document.querySelectorAll('.element-editor__element')[index];
+    if (!el) {
+      logger_1.logger.warn(`HostChannel: no .element-editor__element at index ${index}`);
+      return;
+    }
+    el.click();
+  }
+  handleGridFieldAction(data) {
+    const {
+      key,
+      owner,
+      action
+    } = data;
+    const gridField = document.querySelector(`.grid-field[data-name="${key}"]`);
+    if (!gridField) {
+      logger_1.logger.warn(`HostChannel: no GridField found with data-name="${key}"`);
+      return;
+    }
+    const row = gridField.querySelector(`[data-id="${owner}"]`);
+    if (!row) {
+      logger_1.logger.warn(`HostChannel: no row with data-id="${owner}" in GridField "${key}"`);
+      return;
+    }
+    let btn = null;
+    switch (action) {
+      case 'edit':
+        btn = row.querySelector('a.btn--icon-md, a.font-icon-edit, a[href*="/edit/"]');
+        break;
+      case 'delete':
+        btn = row.querySelector('button.action--delete, button[name*="action_delete"]');
+        break;
+      case 'archive':
+        btn = row.querySelector('button.action--archive, button[name*="action_archive"]');
+        break;
+    }
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: no "${action}" button found in row ${owner} of GridField "${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  findCmsField(key, owner) {
+    const selector = owner ? `[fx-key="${key}"][fx-owner="${owner}"]` : `[fx-key="${key}"]:not([fx-owner])`;
+    return document.querySelector(selector);
+  }
   recieveMessageError(event) {
     logger_1.logger.error("HostChannel reports error from FrameChannel:", event);
   }
+  setOnFrameReady(callback) {
+    this.onFrameReady = callback;
+  }
+  isPreviewingDraft() {
+    try {
+      const src = this.frame?.getAttribute('src') || '';
+      const params = new URLSearchParams(src.split('?')[1] || '');
+      return params.get('stage') === 'Stage';
+    } catch {
+      return false;
+    }
+  }
   broadcastMessage(broadcastMessage) {
+    if (this.inlineEditInProgress && broadcastMessage.type === 'textUpdate') {
+      logger_1.logger.log(`Suppressing textUpdate echo for "${broadcastMessage.key}" during inline edit`);
+      return;
+    }
+    const updateTypes = ['pageTemplateUpdate', 'blockUpdate', 'textUpdate', 'patchTemplateUpdate'];
+    if (updateTypes.includes(broadcastMessage.type) && !this.isPreviewingDraft()) {
+      logger_1.logger.log(`Suppressing ${broadcastMessage.type} — preview is not on Draft stage`);
+      return;
+    }
     this.channelInstance.port1.postMessage(broadcastMessage);
   }
   destroy() {

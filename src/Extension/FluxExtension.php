@@ -44,6 +44,7 @@ class FluxExtension extends Extension
                 }
             }
 
+            Requirements::css("dannidickson/flux: client/dist/styles/preview.css");
             Requirements::javascript("dannidickson/flux: client/dist/js/bind/frame.js");
             Requirements::javascript("dannidickson/flux: client/dist/js/silverstripe-cms/frame.js");
         }

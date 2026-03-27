@@ -40,5 +40,48 @@ export function applyConfig(config: FluxConfigStructure): void {
             element.setAttribute('fx-type', field.type);
             if (segment.owner) element.setAttribute('fx-owner', segment.owner);
         }
+
+        const { RelationFields } = config;
+        if (!RelationFields) continue;
+
+        const segmentRelationFields = RelationFields[segment.ClassName];
+        if (!segmentRelationFields) continue;
+
+        for (const [relationName, relationField] of Object.entries(segmentRelationFields)) {
+            if (!relationField.selector) {
+                logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
+                continue;
+            }
+
+            const els = Array.from(document.querySelectorAll<HTMLElement>(relationField.selector));
+
+            els.forEach((el, index) => {
+                const id = relationField.ids?.[index];
+                if (id === undefined) {
+                    logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
+                    return;
+                }
+
+                const owner = String(id);
+
+                el.setAttribute('fx-type', 'GridField');
+                el.setAttribute('fx-key', relationName);
+                el.setAttribute('fx-grid-actions', JSON.stringify(relationField.actions));
+                el.setAttribute('fx-owner', owner);
+
+                if (relationField.Fields) {
+                    for (const [fieldName, fieldConfig] of Object.entries(relationField.Fields)) {
+                        const childEl = el.querySelector<HTMLElement>(fieldConfig.bind);
+                        if (!childEl) {
+                            logger.warn(`Flux: Cannot find element for ${relationName}.${fieldName} with selector: ${fieldConfig.bind}`);
+                            continue;
+                        }
+                        childEl.setAttribute('fx-key', fieldName);
+                        childEl.setAttribute('fx-type', fieldConfig.type);
+                        childEl.setAttribute('fx-owner', owner);
+                    }
+                }
+            });
+        }
     }
 }

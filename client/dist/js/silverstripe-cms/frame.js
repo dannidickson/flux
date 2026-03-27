@@ -83,7 +83,18 @@ const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../channels/Frame
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const FluxDirectives_1 = __webpack_require__(/*! ../core/FluxDirectives */ "./client/core/FluxDirectives.ts");
+const InlineEditor_1 = __webpack_require__(/*! ../preview/InlineEditor */ "./client/preview/InlineEditor.ts");
 const beforeNodeMorphed = oldNode => oldNode.tagName !== 'SCRIPT';
+function fxSelector(msg) {
+  if (msg.owner) {
+    return `[fx-owner="${msg.owner}"][fx-key="${msg.key}"]`;
+  }
+  return `[fx-key="${msg.key}"]`;
+}
+function isActivelyEditing(msg) {
+  const editingId = `${msg.key}|${msg.owner ?? ''}`;
+  return InlineEditor_1.activeEditingFields.has(editingId);
+}
 const frame = new FrameChannel_1.default();
 frame.onRecievedMessage = event => {
   const messageType = event.data.type;
@@ -91,6 +102,7 @@ frame.onRecievedMessage = event => {
     window.FluxConfig = event.data.config;
     logger_1.logger.log('FluxConfig received from host:', window.FluxConfig);
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
+    (0, InlineEditor_1.initInlineEditing)(frame.channel);
     return;
   }
   updateElement(event.data);
@@ -98,15 +110,9 @@ frame.onRecievedMessage = event => {
 window.addEventListener('DOMContentLoaded', () => {
   if (window.FluxConfig) {
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
+    (0, InlineEditor_1.initInlineEditing)(frame.channel);
   }
 });
-/**
- * Applies the returned HTML to the document
- *
- * @TODO
- *  move this into the `core/index`
- *  Allow developer option for the scripts to be reloaded if they want
- */
 const updateElement = fluxBroadCastMessage => {
   logger_1.logger.log('Flux message received:', fluxBroadCastMessage);
   if (fluxBroadCastMessage.type === "pageTemplateUpdate") {
@@ -118,10 +124,7 @@ const updateElement = fluxBroadCastMessage => {
     logger_1.logger.time('morph');
     const parser = new DOMParser();
     const newDoc = parser.parseFromString(fluxBroadCastMessage.html, 'text/html');
-    idiomorph_1.default.morph(document.documentElement, newDoc.documentElement, {
-      head: {
-        style: 'morph'
-      },
+    idiomorph_1.default.morph(document.body, newDoc.body, {
       callbacks: {
         beforeNodeMorphed
       }
@@ -129,6 +132,7 @@ const updateElement = fluxBroadCastMessage => {
     logger_1.logger.log('Document morphed successfully');
     logger_1.logger.timeEnd('morph');
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
+    (0, InlineEditor_1.initInlineEditing)(frame.channel);
     return;
   }
   if (fluxBroadCastMessage.type === "blockUpdate") {
@@ -152,18 +156,52 @@ const updateElement = fluxBroadCastMessage => {
     logger_1.logger.log('Block morphed successfully');
     logger_1.logger.timeEnd('blockMorph');
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
+    (0, InlineEditor_1.initInlineEditing)(frame.channel);
+    return;
+  }
+  if (fluxBroadCastMessage.type === "patchTemplateUpdate" && fluxBroadCastMessage.key) {
+    const selector = fxSelector(fluxBroadCastMessage);
+    const element = document.querySelector(selector);
+    if (!element) {
+      logger_1.logger.warn(`patchTemplateUpdate: element not found for ${selector}`);
+      return;
+    }
+    element.innerHTML = fluxBroadCastMessage.value || ' ';
+    logger_1.logger.log(`Patched element ${selector}`);
+    return;
+  }
+  if ((fluxBroadCastMessage.type === "richTextUpdate" || fluxBroadCastMessage.type === "richTextPatch") && fluxBroadCastMessage.key) {
+    const selector = fxSelector(fluxBroadCastMessage);
+    const element = document.querySelector(selector);
+    if (!element) {
+      logger_1.logger.warn(`${fluxBroadCastMessage.type}: element not found for ${selector}`);
+      return;
+    }
+    if (isActivelyEditing(fluxBroadCastMessage)) {
+      logger_1.logger.log(`Skipping ${fluxBroadCastMessage.type} for active inline edit [fx-key="${fluxBroadCastMessage.key}"]`);
+      return;
+    }
+    idiomorph_1.default.morph(element, fluxBroadCastMessage.value || ' ', {
+      morphStyle: 'innerHTML',
+      callbacks: {
+        beforeNodeMorphed
+      }
+    });
+    logger_1.logger.log(`Morphed ${fluxBroadCastMessage.type} [fx-key="${fluxBroadCastMessage.key}"]`);
     return;
   }
   if (fluxBroadCastMessage.type === "textUpdate" && fluxBroadCastMessage.key) {
-    logger_1.logger.log(fluxBroadCastMessage);
-    const parts = fluxBroadCastMessage.owner ? [`${fluxBroadCastMessage.owner}`, `[fx-key="${fluxBroadCastMessage.key}"]`] : [`[fx-key="${fluxBroadCastMessage.key}"]`];
-    const element = document.querySelector(parts.join(' '));
+    const selector = fxSelector(fluxBroadCastMessage);
+    const element = document.querySelector(selector);
     if (!element) {
-      logger_1.logger.warn(`Element with fx-key="${fluxBroadCastMessage.key}" not found`);
+      logger_1.logger.warn(`textUpdate: element not found for ${selector}`);
       return;
     }
-    // @ts-ignore
-    element.innerHTML = fluxBroadCastMessage.value;
+    if (isActivelyEditing(fluxBroadCastMessage)) {
+      logger_1.logger.log(`Skipping textUpdate for active inline edit [fx-key="${fluxBroadCastMessage.key}"]`);
+      return;
+    }
+    element.innerHTML = fluxBroadCastMessage.value || ' ';
     logger_1.logger.log(`Updated element [fx-key="${fluxBroadCastMessage.key}"]`);
     return;
   }
@@ -255,6 +293,43 @@ function applyConfig(config) {
       element.setAttribute('fx-type', field.type);
       if (segment.owner) element.setAttribute('fx-owner', segment.owner);
     }
+    const {
+      RelationFields
+    } = config;
+    if (!RelationFields) continue;
+    const segmentRelationFields = RelationFields[segment.ClassName];
+    if (!segmentRelationFields) continue;
+    for (const [relationName, relationField] of Object.entries(segmentRelationFields)) {
+      if (!relationField.selector) {
+        logger_1.logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
+        continue;
+      }
+      const els = Array.from(document.querySelectorAll(relationField.selector));
+      els.forEach((el, index) => {
+        const id = relationField.ids?.[index];
+        if (id === undefined) {
+          logger_1.logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
+          return;
+        }
+        const owner = String(id);
+        el.setAttribute('fx-type', 'GridField');
+        el.setAttribute('fx-key', relationName);
+        el.setAttribute('fx-grid-actions', JSON.stringify(relationField.actions));
+        el.setAttribute('fx-owner', owner);
+        if (relationField.Fields) {
+          for (const [fieldName, fieldConfig] of Object.entries(relationField.Fields)) {
+            const childEl = el.querySelector(fieldConfig.bind);
+            if (!childEl) {
+              logger_1.logger.warn(`Flux: Cannot find element for ${relationName}.${fieldName} with selector: ${fieldConfig.bind}`);
+              continue;
+            }
+            childEl.setAttribute('fx-key', fieldName);
+            childEl.setAttribute('fx-type', fieldConfig.type);
+            childEl.setAttribute('fx-owner', owner);
+          }
+        }
+      });
+    }
   }
 }
 
@@ -301,6 +376,488 @@ class Logger {
 }
 exports["default"] = Logger;
 exports.logger = new Logger("development");
+
+/***/ }),
+
+/***/ "./client/preview/FluxEditButton.ts":
+/*!******************************************!*\
+  !*** ./client/preview/FluxEditButton.ts ***!
+  \******************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var __importDefault = this && this.__importDefault || function (mod) {
+  return mod && mod.__esModule ? mod : {
+    "default": mod
+  };
+};
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.FluxEditButton = void 0;
+const flux_edit_btn_shadow_css_1 = __importDefault(__webpack_require__(/*! ./flux-edit-btn.shadow.css */ "./client/preview/flux-edit-btn.shadow.css"));
+const shadow_sheet_1 = __webpack_require__(/*! ./shadow-sheet */ "./client/preview/shadow-sheet.ts");
+const styles = (0, shadow_sheet_1.createSheet)(flux_edit_btn_shadow_css_1.default);
+class FluxEditButton extends HTMLElement {
+  constructor() {
+    super();
+    const shadow = this.attachShadow({
+      mode: "open"
+    });
+    shadow.adoptedStyleSheets = [styles];
+    this._btn = document.createElement("button");
+    shadow.appendChild(this._btn);
+    this._btn.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.dispatchEvent(new CustomEvent("flux-click", {
+        bubbles: true,
+        composed: true
+      }));
+    });
+  }
+  set label(val) {
+    this._btn.textContent = val;
+  }
+  get label() {
+    return this._btn.textContent ?? "";
+  }
+  set visible(val) {
+    if (val) {
+      this.setAttribute("visible", "");
+    } else {
+      this.removeAttribute("visible");
+    }
+  }
+}
+exports.FluxEditButton = FluxEditButton;
+
+/***/ }),
+
+/***/ "./client/preview/FluxElements.ts":
+/*!****************************************!*\
+  !*** ./client/preview/FluxElements.ts ***!
+  \****************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.FluxLinkDot = exports.FluxGridToolbar = exports.FluxEditButton = void 0;
+exports.registerFluxElements = registerFluxElements;
+const FluxEditButton_1 = __webpack_require__(/*! ./FluxEditButton */ "./client/preview/FluxEditButton.ts");
+Object.defineProperty(exports, "FluxEditButton", ({
+  enumerable: true,
+  get: function () {
+    return FluxEditButton_1.FluxEditButton;
+  }
+}));
+const FluxGridToolbar_1 = __webpack_require__(/*! ./FluxGridToolbar */ "./client/preview/FluxGridToolbar.ts");
+Object.defineProperty(exports, "FluxGridToolbar", ({
+  enumerable: true,
+  get: function () {
+    return FluxGridToolbar_1.FluxGridToolbar;
+  }
+}));
+const FluxLinkDot_1 = __webpack_require__(/*! ./FluxLinkDot */ "./client/preview/FluxLinkDot.ts");
+Object.defineProperty(exports, "FluxLinkDot", ({
+  enumerable: true,
+  get: function () {
+    return FluxLinkDot_1.FluxLinkDot;
+  }
+}));
+function registerFluxElements() {
+  if (!customElements.get("flux-edit-btn")) {
+    customElements.define("flux-edit-btn", FluxEditButton_1.FluxEditButton);
+  }
+  if (!customElements.get("flux-grid-toolbar")) {
+    customElements.define("flux-grid-toolbar", FluxGridToolbar_1.FluxGridToolbar);
+  }
+  if (!customElements.get("flux-link-dot")) {
+    customElements.define("flux-link-dot", FluxLinkDot_1.FluxLinkDot);
+  }
+}
+
+/***/ }),
+
+/***/ "./client/preview/FluxGridToolbar.ts":
+/*!*******************************************!*\
+  !*** ./client/preview/FluxGridToolbar.ts ***!
+  \*******************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var __importDefault = this && this.__importDefault || function (mod) {
+  return mod && mod.__esModule ? mod : {
+    "default": mod
+  };
+};
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.FluxGridToolbar = void 0;
+const flux_grid_toolbar_shadow_css_1 = __importDefault(__webpack_require__(/*! ./flux-grid-toolbar.shadow.css */ "./client/preview/flux-grid-toolbar.shadow.css"));
+const shadow_sheet_1 = __webpack_require__(/*! ./shadow-sheet */ "./client/preview/shadow-sheet.ts");
+const styles = (0, shadow_sheet_1.createSheet)(flux_grid_toolbar_shadow_css_1.default);
+class FluxGridToolbar extends HTMLElement {
+  constructor() {
+    super();
+    this._shadow = this.attachShadow({
+      mode: "open"
+    });
+    this._shadow.adoptedStyleSheets = [styles];
+  }
+  addAction(action, icon, onClick) {
+    const btn = document.createElement("button");
+    btn.setAttribute("data-action", action);
+    btn.innerHTML = icon;
+    btn.title = action.charAt(0).toUpperCase() + action.slice(1);
+    btn.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+    this._shadow.appendChild(btn);
+  }
+  show(rect) {
+    this.style.top = `${rect.top + 4}px`;
+    this.style.left = `${rect.right - 4}px`;
+    this.setAttribute("visible", "");
+  }
+  hide() {
+    this.removeAttribute("visible");
+  }
+}
+exports.FluxGridToolbar = FluxGridToolbar;
+
+/***/ }),
+
+/***/ "./client/preview/FluxLinkDot.ts":
+/*!***************************************!*\
+  !*** ./client/preview/FluxLinkDot.ts ***!
+  \***************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var __importDefault = this && this.__importDefault || function (mod) {
+  return mod && mod.__esModule ? mod : {
+    "default": mod
+  };
+};
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.FluxLinkDot = void 0;
+const flux_link_dot_shadow_css_1 = __importDefault(__webpack_require__(/*! ./flux-link-dot.shadow.css */ "./client/preview/flux-link-dot.shadow.css"));
+const shadow_sheet_1 = __webpack_require__(/*! ./shadow-sheet */ "./client/preview/shadow-sheet.ts");
+const styles = (0, shadow_sheet_1.createSheet)(flux_link_dot_shadow_css_1.default);
+class FluxLinkDot extends HTMLElement {
+  constructor() {
+    super();
+    const shadow = this.attachShadow({
+      mode: 'open'
+    });
+    shadow.adoptedStyleSheets = [styles];
+    shadow.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="#fff"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm2.92 1.83H5v-.75l9.06-9.06.75.75-8.89 9.06zM20.71 5.63l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83a1 1 0 0 0 0-1.41z"/></svg>`;
+  }
+  show(rect) {
+    this.style.top = `${rect.top - 2}px`;
+    this.style.left = `${rect.right + 2}px`;
+    this.setAttribute('visible', '');
+  }
+  hide() {
+    this.removeAttribute('visible');
+  }
+}
+exports.FluxLinkDot = FluxLinkDot;
+
+/***/ }),
+
+/***/ "./client/preview/InlineEditor.ts":
+/*!****************************************!*\
+  !*** ./client/preview/InlineEditor.ts ***!
+  \****************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.activeEditingFields = void 0;
+exports.initInlineEditing = initInlineEditing;
+const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
+const FluxElements_1 = __webpack_require__(/*! ./FluxElements */ "./client/preview/FluxElements.ts");
+const TEXT_SELECTOR = '[fx-key][fx-type="Text"]';
+const FILE_SELECTOR = '[fx-key][fx-type="FileUpload"]';
+const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
+exports.activeEditingFields = new Set();
+const openBlocks = new Set();
+function fieldId(key, owner) {
+  return `${key}|${owner ?? ''}`;
+}
+function setBlockEditable(owner, editable) {
+  document.querySelectorAll(`[fx-owner="${owner}"][fx-type="Text"]`).forEach(el => {
+    el.contentEditable = String(editable);
+  });
+}
+function initInlineEditing(channel) {
+  if (!channel) {
+    logger_1.logger.warn('InlineEditor: no channel available, skipping setup');
+    return;
+  }
+  (0, FluxElements_1.registerFluxElements)();
+  initTextEditing(channel);
+  initFileUploadEditing(channel);
+  initLinkFieldEditing(channel);
+  initGridFieldEditing(channel);
+  initBlockEditButtons(channel);
+}
+function initTextEditing(channel) {
+  document.querySelectorAll(TEXT_SELECTOR).forEach(el => {
+    if (el.hasAttribute('fx-inline-ready')) return;
+    el.setAttribute('fx-inline-ready', '1');
+    const owner = el.getAttribute('fx-owner') ?? null;
+    const editable = owner === null || openBlocks.has(owner);
+    el.contentEditable = String(editable);
+    el.addEventListener('focus', () => {
+      const key = el.getAttribute('fx-key');
+      exports.activeEditingFields.add(fieldId(key, owner));
+    });
+    el.addEventListener('blur', () => {
+      const key = el.getAttribute('fx-key');
+      exports.activeEditingFields.delete(fieldId(key, owner));
+    });
+    el.addEventListener('input', () => {
+      const key = el.getAttribute('fx-key');
+      const value = el.innerText.trim() || ' ';
+      logger_1.logger.log(`Inline edit → key: "${key}", value: "${value}"`);
+      channel.postMessage({
+        type: 'inlineEditUpdate',
+        key,
+        value,
+        owner
+      });
+    });
+  });
+}
+function initFileUploadEditing(channel) {
+  document.querySelectorAll(FILE_SELECTOR).forEach(el => {
+    if (el.hasAttribute('fx-inline-ready')) return;
+    el.setAttribute('fx-inline-ready', '1');
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', e => {
+      e.preventDefault();
+      const key = el.getAttribute('fx-key');
+      const owner = el.getAttribute('fx-owner') ?? null;
+      logger_1.logger.log(`File upload click → key: "${key}"`);
+      channel.postMessage({
+        type: 'fileUploadClick',
+        key,
+        owner
+      });
+    });
+  });
+}
+function initLinkFieldEditing(channel) {
+  document.querySelectorAll(LINK_SELECTOR).forEach(el => {
+    if (el.hasAttribute('fx-inline-ready')) return;
+    el.setAttribute('fx-inline-ready', '1');
+    const key = el.getAttribute('fx-key');
+    const owner = el.getAttribute('fx-owner') ?? null;
+    const dot = document.createElement('flux-link-dot');
+    document.body.appendChild(dot);
+    el.addEventListener('mouseenter', () => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      dot.show(range.getBoundingClientRect());
+    });
+    let hideTimeout = null;
+    const hideDot = () => dot.hide();
+    el.addEventListener('mouseleave', () => {
+      hideTimeout = setTimeout(hideDot, 500);
+    });
+    dot.addEventListener('mouseenter', () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+    });
+    dot.addEventListener('mouseleave', hideDot);
+    dot.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      logger_1.logger.log(`Link field edit dot click → key: "${key}"`);
+      channel.postMessage({
+        type: 'linkFieldClick',
+        key,
+        owner
+      });
+    });
+  });
+}
+const GRID_ACTION_ICONS = {
+  edit: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm2.92 1.83H5v-.75l9.06-9.06.75.75-8.89 9.06zM20.71 5.63l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83a1 1 0 0 0 0-1.41z"/></svg>`,
+  delete: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
+  archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/></svg>`
+};
+function initGridFieldEditing(channel) {
+  document.querySelectorAll('[fx-type="GridField"][fx-key][fx-owner]').forEach(el => {
+    if (el.hasAttribute('fx-inline-ready')) return;
+    el.setAttribute('fx-inline-ready', '1');
+    const key = el.getAttribute('fx-key');
+    const owner = el.getAttribute('fx-owner');
+    const actions = JSON.parse(el.getAttribute('fx-grid-actions') ?? '["edit"]');
+    const toolbar = document.createElement('flux-grid-toolbar');
+    document.body.appendChild(toolbar);
+    actions.forEach(action => {
+      toolbar.addAction(action, GRID_ACTION_ICONS[action] ?? action, () => {
+        logger_1.logger.log(`GridField action → key: "${key}", owner: "${owner}", action: "${action}"`);
+        channel.postMessage({
+          type: 'gridFieldAction',
+          key,
+          owner,
+          action
+        });
+      });
+    });
+    let hideTimeout = null;
+    const showToolbar = () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+      toolbar.show(el.getBoundingClientRect());
+    };
+    const hideToolbar = () => {
+      hideTimeout = setTimeout(() => toolbar.hide(), 300);
+    };
+    el.addEventListener('mouseenter', showToolbar);
+    el.addEventListener('mouseleave', hideToolbar);
+    toolbar.addEventListener('mouseenter', () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+    });
+    toolbar.addEventListener('mouseleave', hideToolbar);
+  });
+}
+function initBlockEditButtons(channel) {
+  const owners = new Set();
+  document.querySelectorAll('[fx-owner]').forEach(el => {
+    owners.add(el.getAttribute('fx-owner'));
+  });
+  owners.forEach(owner => {
+    let ownerEl = document.querySelector(owner);
+    if (!ownerEl) {
+      return;
+    }
+    if (ownerEl.hasAttribute('fx-block-btn-ready')) return;
+    ownerEl.setAttribute('fx-block-btn-ready', '1');
+    if (getComputedStyle(ownerEl).position === 'static') {
+      ownerEl.style.position = 'relative';
+    }
+    const isInlineEditable = ownerEl.querySelector(TEXT_SELECTOR) !== null;
+    const btn = document.createElement('flux-edit-btn');
+    const updateButton = () => {
+      if (!isInlineEditable) {
+        btn.label = 'Open';
+        return;
+      }
+      btn.label = openBlocks.has(owner) ? 'Edit / Close' : 'Edit';
+    };
+    updateButton();
+    ownerEl.addEventListener('mouseenter', () => {
+      btn.visible = true;
+    });
+    ownerEl.addEventListener('mouseleave', () => {
+      btn.visible = false;
+    });
+    btn.addEventListener('flux-click', () => {
+      if (isInlineEditable) {
+        if (openBlocks.has(owner)) {
+          openBlocks.delete(owner);
+          setBlockEditable(owner, false);
+        } else {
+          openBlocks.add(owner);
+          setBlockEditable(owner, true);
+        }
+        updateButton();
+      }
+      logger_1.logger.log(`Block button click → owner: "${owner}", open: ${openBlocks.has(owner)}`);
+      channel.postMessage({
+        type: 'editBlockClick',
+        owner
+      });
+    });
+    ownerEl.appendChild(btn);
+  });
+}
+
+/***/ }),
+
+/***/ "./client/preview/flux-edit-btn.shadow.css":
+/*!*************************************************!*\
+  !*** ./client/preview/flux-edit-btn.shadow.css ***!
+  \*************************************************/
+/***/ (function(module) {
+
+"use strict";
+module.exports = ":host {\n    position: absolute;\n    top: 0;\n    right: 0;\n    z-index: 9999;\n    display: block;\n}\n\nbutton {\n    padding: 4px 10px;\n    font-size: 11px;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.03em;\n    line-height: 1.4;\n    color: #fff;\n    background: var(--flux-color-edit, #1A4877);\n    border: none;\n    border-radius: 0 0 0 4px;\n    cursor: pointer;\n    white-space: nowrap;\n    opacity: 0;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) button {\n    opacity: 1;\n}\n\nbutton:hover {\n    filter: brightness(1.2);\n}\n";
+
+/***/ }),
+
+/***/ "./client/preview/flux-grid-toolbar.shadow.css":
+/*!*****************************************************!*\
+  !*** ./client/preview/flux-grid-toolbar.shadow.css ***!
+  \*****************************************************/
+/***/ (function(module) {
+
+"use strict";
+module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 3px;\n    padding: 4px;\n    background: rgba(15, 20, 28, 0.75);\n    backdrop-filter: blur(4px);\n    border-radius: 5px;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    width: 24px;\n    height: 24px;\n    padding: 0;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    color: #fff;\n    border: none;\n    border-radius: 4px;\n    cursor: pointer;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.3);\n}\n\nbutton[data-action=\"edit\"] {\n   background: var(--flux-color-edit, #1A4877);\n  }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete,  #CB3E00); }\nbutton[data-action=\"archive\"] { background: var(--flux-color-archive, #b7680a); }\n";
+
+/***/ }),
+
+/***/ "./client/preview/flux-link-dot.shadow.css":
+/*!*************************************************!*\
+  !*** ./client/preview/flux-link-dot.shadow.css ***!
+  \*************************************************/
+/***/ (function(module) {
+
+"use strict";
+module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    width: 20px;\n    height: 20px;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    background: var(--flux-color-edit, #1A4877);\n    border: 2px solid rgba(255, 255, 255, 0.9);\n    border-radius: 50%;\n    box-sizing: border-box;\n    cursor: pointer;\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\n:host(:hover) {\n    filter: brightness(1.2);\n}\n";
+
+/***/ }),
+
+/***/ "./client/preview/shadow-sheet.ts":
+/*!****************************************!*\
+  !*** ./client/preview/shadow-sheet.ts ***!
+  \****************************************/
+/***/ (function(__unused_webpack_module, exports) {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.createSheet = createSheet;
+function createSheet(css) {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(css);
+  return sheet;
+}
 
 /***/ }),
 

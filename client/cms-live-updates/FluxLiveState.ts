@@ -5,7 +5,7 @@
  * for field changes. Segments provides the structural map of the page.
  */
 
-import Logger, { logger } from "../core/logger";
+import { logger } from "../core/logger";
 import type { FluxConfigSegment, FluxConfigStructure } from "../types/flux.interface";
 
 class FluxLiveState {

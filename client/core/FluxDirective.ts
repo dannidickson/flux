@@ -1,5 +1,5 @@
-export type FluxFieldType = 'Text' | 'HTML';
-export type FluxProxyType = 'previousElementSibling' | 'self' | 'default';
+export type FluxFieldType = 'Text' | 'HTML' | 'SingleSelectField' | 'LinkField';
+export type FluxProxyType = 'previousElementSibling' | 'nextElementSibling' | 'self' | 'default';
 
 export interface FluxDirective {
     readonly key: string;

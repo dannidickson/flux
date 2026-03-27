@@ -15,18 +15,26 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 class HostChannel {
+  get isInlineEditInProgress() {
+    return this.inlineEditInProgress;
+  }
+  get frame() {
+    return document.querySelector(this.frameSelector);
+  }
   constructor(url, frameElement) {
+    this.onFrameReady = null;
+    this.inlineEditInProgress = false;
     this.channelType = "MessageChannel";
-    this.frame = document.querySelector(frameElement);
-    if (this.frame === null) {
+    this.frameSelector = frameElement;
+    if (!this.frame) {
       throw new Error(`iFrame cannot be found using ${frameElement}`);
     }
     this.createChannel();
-    // Listen for FRAME_READY signal from iframe (including reloads)
     this.readyHandler = event => {
       if (event.data.type === 'FRAME_READY' && event.origin === window.location.origin) {
         logger_1.logger.log("Frame ready - establishing channel");
         this.recreateChannel();
+        this.onFrameReady?.();
       }
     };
     window.addEventListener('message', this.readyHandler);
@@ -39,13 +47,10 @@ class HostChannel {
   }
   recreateChannel() {
     logger_1.logger.log("Recreating MessageChannel for iframe reload");
-    // Close old channel
     if (this.channelInstance) {
       this.channelInstance.port1.close();
     }
-    // Create new channel
     this.createChannel();
-    // Send new port to iframe
     this.sendPortToFrame();
   }
   sendPortToFrame() {
@@ -55,11 +60,172 @@ class HostChannel {
     // @ts-ignore
     this.frame.contentWindow.postMessage(message, window.location.origin, [this.channelInstance.port2]);
   }
-  recieveMessageFromFrame(event) {}
+  recieveMessageFromFrame(event) {
+    const data = event.data;
+    if (!data.type) {
+      logger_1.logger.warn("HostChannel received message without type:", data);
+    }
+    switch (data.type) {
+      case 'inlineEditUpdate':
+        this.handleInlineEditUpdate(data);
+        break;
+      case 'fileUploadClick':
+        this.handleFileUploadClick(data);
+        break;
+      case 'linkFieldClick':
+        this.handleLinkFieldClick(data);
+        break;
+      case 'editBlockClick':
+        this.handleEditBlockClick(data);
+        break;
+      case 'gridFieldAction':
+        this.handleGridFieldAction(data);
+        break;
+      default:
+        logger_1.logger.warn("HostChannel received unknown message type:", data.type);
+    }
+  }
+  handleInlineEditUpdate(data) {
+    const {
+      key,
+      value,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find input for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    // Use the native setter so React's controlled-input tracking stays in sync.
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, value);
+    } else {
+      input.value = value;
+    }
+    this.inlineEditInProgress = true;
+    input.dispatchEvent(new Event('input', {
+      bubbles: true
+    }));
+    input.dispatchEvent(new Event('keyup', {
+      bubbles: true
+    }));
+    this.inlineEditInProgress = false;
+  }
+  handleFileUploadClick(data) {
+    const {
+      key,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find upload field for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    const holder = input.previousElementSibling;
+    const btn = holder?.querySelector('.uploadfield-item__view-btn');
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: could not find .uploadfield-item__view-btn for fx-key="${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  handleLinkFieldClick(data) {
+    const {
+      key,
+      owner
+    } = data;
+    const input = this.findCmsField(key, owner);
+    if (!input) {
+      logger_1.logger.warn(`HostChannel: could not find link field for fx-key="${key}" fx-owner="${owner}"`);
+      return;
+    }
+    const container = input.nextElementSibling;
+    const btn = container?.querySelector('.link-picker__button');
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: could not find .link-picker__button for fx-key="${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  handleEditBlockClick(data) {
+    const segments = window.FluxConfig?.Segments ?? [];
+    const elementSegments = segments.filter(s => s.Type === 'Element');
+    const index = elementSegments.findIndex(s => s.owner === data.owner);
+    if (index === -1) {
+      logger_1.logger.warn(`HostChannel: no Element segment found for owner "${data.owner}"`);
+      return;
+    }
+    const el = document.querySelectorAll('.element-editor__element')[index];
+    if (!el) {
+      logger_1.logger.warn(`HostChannel: no .element-editor__element at index ${index}`);
+      return;
+    }
+    el.click();
+  }
+  handleGridFieldAction(data) {
+    const {
+      key,
+      owner,
+      action
+    } = data;
+    const gridField = document.querySelector(`.grid-field[data-name="${key}"]`);
+    if (!gridField) {
+      logger_1.logger.warn(`HostChannel: no GridField found with data-name="${key}"`);
+      return;
+    }
+    const row = gridField.querySelector(`[data-id="${owner}"]`);
+    if (!row) {
+      logger_1.logger.warn(`HostChannel: no row with data-id="${owner}" in GridField "${key}"`);
+      return;
+    }
+    let btn = null;
+    switch (action) {
+      case 'edit':
+        btn = row.querySelector('a.btn--icon-md, a.font-icon-edit, a[href*="/edit/"]');
+        break;
+      case 'delete':
+        btn = row.querySelector('button.action--delete, button[name*="action_delete"]');
+        break;
+      case 'archive':
+        btn = row.querySelector('button.action--archive, button[name*="action_archive"]');
+        break;
+    }
+    if (!btn) {
+      logger_1.logger.warn(`HostChannel: no "${action}" button found in row ${owner} of GridField "${key}"`);
+      return;
+    }
+    btn.click();
+  }
+  findCmsField(key, owner) {
+    const selector = owner ? `[fx-key="${key}"][fx-owner="${owner}"]` : `[fx-key="${key}"]:not([fx-owner])`;
+    return document.querySelector(selector);
+  }
   recieveMessageError(event) {
     logger_1.logger.error("HostChannel reports error from FrameChannel:", event);
   }
+  setOnFrameReady(callback) {
+    this.onFrameReady = callback;
+  }
+  isPreviewingDraft() {
+    try {
+      const src = this.frame?.getAttribute('src') || '';
+      const params = new URLSearchParams(src.split('?')[1] || '');
+      return params.get('stage') === 'Stage';
+    } catch {
+      return false;
+    }
+  }
   broadcastMessage(broadcastMessage) {
+    if (this.inlineEditInProgress && broadcastMessage.type === 'textUpdate') {
+      logger_1.logger.log(`Suppressing textUpdate echo for "${broadcastMessage.key}" during inline edit`);
+      return;
+    }
+    const updateTypes = ['pageTemplateUpdate', 'blockUpdate', 'textUpdate', 'patchTemplateUpdate'];
+    if (updateTypes.includes(broadcastMessage.type) && !this.isPreviewingDraft()) {
+      logger_1.logger.log(`Suppressing ${broadcastMessage.type} — preview is not on Draft stage`);
+      return;
+    }
     this.channelInstance.port1.postMessage(broadcastMessage);
   }
   destroy() {
@@ -87,11 +253,12 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const FluxDirective_1 = __webpack_require__(/*! ../core/FluxDirective */ "./client/core/FluxDirective.ts");
 class FluxDirectiveManager {
-  constructor($, fluxState, onTriggerUpdate, hostChannel) {
+  constructor($, fluxState, onTriggerUpdate, hostChannel, onPatchUpdate) {
     this.$ = $;
     this.fluxState = fluxState;
     this.onTriggerUpdate = onTriggerUpdate;
     this.hostChannel = hostChannel;
+    this.onPatchUpdate = onPatchUpdate;
   }
   initialize() {
     const manager = this;
@@ -114,7 +281,9 @@ class FluxDirectiveManager {
         }
         if (element.tagName === "TEXTAREA" && binding.type === "HTML") {
           manager.setupTinyMCEListener(element, binding);
+          return;
         }
+        let previousValue = element.value ?? "";
         element.addEventListener(binding.event, listenerEvent => {
           let value;
           let type;
@@ -127,6 +296,14 @@ class FluxDirectiveManager {
               type
             } = manager.extractEventData(listenerEvent, binding.event, element));
           }
+          /**
+           * Trigger a templateUpdate when a field changes
+           * from being empty to including text
+           */
+          if (type === "Text" && previousValue.trim().length === 0 && String(value).trim().length > 0 && !manager.hostChannel.isInlineEditInProgress) {
+            type = "HTML";
+          }
+          previousValue = String(value);
           manager.fluxState.updateField(binding.key, value, {
             type,
             owner: binding.owner ?? undefined
@@ -157,20 +334,17 @@ class FluxDirectiveManager {
       }
     });
   }
-  /**
-   * Observe a proxy container found via [fx-key]'s fx-proxy attribute.
-   * Tracks first-run to avoid triggering on the initial mutation.
-   */
   observeKeyProxyElement(element, binding) {
     let previousValue = null;
     let isFirstRun = true;
-    // For previousElementSibling (e.g. UploadField), the [fx-key] element is a leaf
-    // (the file input), and mutations happen inside its previous sibling (the holder div).
-    // Observe that sibling and query the proxy within it.
-    // For all other types, observe the field container itself.
-    const observeTarget = binding.proxyType === "previousElementSibling" ? element.previousElementSibling ?? element : element;
+    let observeTarget = element;
+    if (binding.proxyType === "previousElementSibling") {
+      observeTarget = element.previousElementSibling ?? element;
+    } else if (binding.proxyType === "nextElementSibling") {
+      observeTarget = element.nextElementSibling ?? element;
+    }
     const observer = new MutationObserver(() => {
-      const proxiedElement = observeTarget.querySelector(binding.proxySelector);
+      const proxiedElement = binding.proxyType === "nextElementSibling" ? element : observeTarget.querySelector(binding.proxySelector);
       if (!proxiedElement) return;
       const currentValue = (0, FluxDirective_1.getElementValue)(proxiedElement);
       if (isFirstRun) {
@@ -194,18 +368,63 @@ class FluxDirectiveManager {
   }
   setupTinyMCEListener(element, binding) {
     const editor = window.tinymce?.get(element.id);
-    if (editor) {
-      editor.on("keyup", () => {
-        document.querySelector(".flux-refresh__button")?.classList.toggle("hidden", false);
+    if (!editor) return;
+    let previousContent = editor.getContent() ?? "";
+    const sendTextUpdate = () => {
+      const currentEditor = window.tinymce.get(element.id);
+      if (!currentEditor.hasFocus()) return;
+      const content = currentEditor.getContent();
+      if (content === previousContent) return;
+      previousContent = content;
+      // When shortcodes are present, use the editor body's innerHTML instead
+      // — TinyMCE renders shortcodes as real DOM elements that morph smoothly.
+      if (this.containsShortcode(content)) {
         this.hostChannel.broadcastMessage({
-          type: "textUpdate",
+          type: "richTextUpdate",
           key: binding.key,
           owner: binding.owner,
-          event: binding.event,
-          value: editor.getContent()
+          value: currentEditor.getBody().innerHTML
         });
+        return;
+      }
+      this.hostChannel.broadcastMessage({
+        type: "textUpdate",
+        key: binding.key,
+        owner: binding.owner,
+        event: binding.event,
+        value: content
       });
-    }
+    };
+    const sendPatchUpdate = () => {
+      const currentEditor = window.tinymce.get(element.id);
+      if (!currentEditor.hasFocus()) return;
+      const content = currentEditor.getContent();
+      if (content === previousContent) return;
+      previousContent = content;
+      document.querySelector(".flux-refresh__button")?.classList.toggle("hidden", false);
+      this.fluxState.updateField(binding.key, content, {
+        type: "HTML",
+        owner: binding.owner ?? undefined
+      });
+      this.hostChannel.broadcastMessage({
+        type: "richTextPatch",
+        key: binding.key,
+        owner: binding.owner,
+        value: content
+      });
+      this.onPatchUpdate(binding.key, content, binding.owner);
+    };
+    editor.on("input", () => {
+      sendTextUpdate();
+    });
+    editor.on("Change", e => {
+      if (!e.originalEvent || e.originalEvent.type === "execcommand") {
+        sendPatchUpdate();
+      }
+    });
+  }
+  containsShortcode(content) {
+    return /\[[a-zA-Z_][\w]*\s[^\]]*\]/.test(content);
   }
   extractEventData(event, eventType, element) {
     let value;
@@ -263,7 +482,7 @@ const PAGE_COOLDOWN_MS = 500;
 const BLOCK_COOLDOWN_MS = 500;
 function createCooldown(ms) {
   const last = new Map();
-  return (key = 'default') => {
+  return (key = "default") => {
     const now = Date.now();
     if (now - (last.get(key) ?? 0) < ms) return false;
     last.set(key, now);
@@ -277,6 +496,7 @@ class FluxHostCoordinator {
     this.pageReady = createCooldown(PAGE_COOLDOWN_MS);
     this.blockReady = createCooldown(BLOCK_COOLDOWN_MS);
     this.observers = [];
+    this.suppressModalUpdate = false;
     this.hostChannel = new HostChannel_1.default(url, CMS_FRAME);
     this.fluxState = new FluxLiveState_1.default();
   }
@@ -287,10 +507,12 @@ class FluxHostCoordinator {
     this.setupFluxBindings();
   }
   setupIframeListeners() {
-    const iframe = document.querySelector(CMS_FRAME);
-    if (iframe) {
-      iframe.addEventListener("load", () => this.sendFluxConfigToIframe());
-    }
+    this.hostChannel.setOnFrameReady(() => {
+      this.sendFluxConfigToIframe();
+      if (Object.keys(this.fluxState.getChangeSet()).length > 0) {
+        this.sendPageTemplateUpdate();
+      }
+    });
   }
   sendFluxConfigToIframe() {
     if (window.FluxConfig) {
@@ -302,8 +524,10 @@ class FluxHostCoordinator {
   }
   observeClassAttribute(element, callback) {
     const observer = new MutationObserver(mutations => {
-      mutations.forEach(m => {
-        if (m.attributeName === "class") callback(m.target);
+      mutations.forEach(mutation => {
+        if (mutation.attributeName === "class") {
+          callback(mutation.target);
+        }
       });
     });
     observer.observe(element, {
@@ -342,6 +566,11 @@ class FluxHostCoordinator {
         logger_1.logger.log("Modal opened");
       } else {
         window.setTimeout(() => {
+          if (this.suppressModalUpdate) {
+            logger_1.logger.log("Modal closed — skipping update (TinyMCE handled)");
+            this.suppressModalUpdate = false;
+            return;
+          }
           logger_1.logger.log("Modal closed");
           this.sendPageTemplateUpdate();
         }, 500);
@@ -412,8 +641,38 @@ class FluxHostCoordinator {
       this.sendPageTemplateUpdate();
     }
   }
+  async sendPatchUpdate(key, value, owner) {
+    if (!this.fluxState.getIsActive()) return;
+    this.suppressModalUpdate = true;
+    try {
+      const response = await fetch(`${API_ENDPOINT}/shortCodesFragmentPatch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          key,
+          value,
+          owner
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Patch update failed: ${response.statusText}`);
+      }
+      const data = await response.json();
+      this.hostChannel.broadcastMessage({
+        type: "patchTemplateUpdate",
+        key: data.key,
+        owner: data.owner,
+        value: data.html
+      });
+    } catch (error) {
+      logger_1.logger.warn("Patch update failed, falling back to full update:", error);
+      this.triggerUpdate(owner);
+    }
+  }
   setupFluxBindings() {
-    const bindingManager = new FluxDirectiveManager_1.default(this.$, this.fluxState, owner => this.triggerUpdate(owner), this.hostChannel);
+    const bindingManager = new FluxDirectiveManager_1.default(this.$, this.fluxState, owner => this.triggerUpdate(owner), this.hostChannel, (key, value, owner) => this.sendPatchUpdate(key, value, owner));
     bindingManager.initialize();
   }
   destroy() {

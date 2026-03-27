@@ -1,0 +1,10 @@
+:root {
+    --flux-color-edit: #0B68F4;
+    --flux-color-delete: #CB3E00;
+    --flux-color-archive: #b7680a;
+}
+
+[fx-key]:hover {
+    outline: 2px solid #0B68F4;
+    outline-offset: 3px;
+}
