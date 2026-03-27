@@ -27,27 +27,22 @@ class FluxDataObjectExtension extends Extension
     public function setFluxFields(FieldList $fields)
     {
         $config = $this->getOwner()->config();
-        $fluxFields = $config->get("flux_fields");
-
         $hasOne = $config->get("has_one");
 
-        if (!$fluxFields || !is_array($fluxFields)) {
-            return $fields;
-        }
+        $fluxFields = $config->get("flux_fields") ?? [];
 
         foreach ($fluxFields as $key => $value) {
             $field = $fields->dataFieldByName($key);
 
-            if (!$field && array_key_exists($key, $hasOne)) {
-                $hasOneIDKey = (string) $key . 'ID';
-                $field = $fields->dataFieldByName($hasOneIDKey);
+            if (!$field && array_key_exists($key, $hasOne ?? [])) {
+                $field = $fields->dataFieldByName($key . 'ID');
             }
 
             if (!$field) {
                 continue;
             }
 
-            $field = $this->setFieldAttributes($field, $key, $value);
+            $this->setFieldAttributes($field, $key, $value);
         }
 
         return $fields;

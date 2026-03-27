@@ -1,0 +1,8 @@
+---
+Name: flux-dev-commands
+Only:
+  environment: dev
+---
+SilverStripe\Dev\DevelopmentAdmin:
+  commands:
+    flux-generate-config: 'Flux\Dev\FluxGenerateConfigTask'

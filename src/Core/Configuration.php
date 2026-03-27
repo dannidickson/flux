@@ -12,4 +12,16 @@ class Configuration
 
     private static bool $flux_components_enabled = true;
     private static bool $flux_live_updates_enabled = true;
+
+    /**
+     * Classes to exclude from flux config generation and live updates.
+     * e.g. RedirectorPage, ErrorPage — pages without meaningful templates.
+     *
+     * @var string[]
+     */
+    private static array $excluded_classes = [
+        \SilverStripe\CMS\Model\RedirectorPage::class,
+        \SilverStripe\ErrorPage\ErrorPage::class,
+        \SilverStripe\CMS\Model\VirtualPage::class,
+    ];
 }
