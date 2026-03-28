@@ -264,6 +264,19 @@ class FluxConfigService
     }
 
     /**
+     * Manually set relation field config for a given class and relation.
+     * Useful when the auto-collected data needs filtering or customisation.
+     */
+    public static function setRelationField(string $className, string $relationName, array $config): void
+    {
+        if (!isset(self::$relationFields[$className])) {
+            self::$relationFields[$className] = [];
+        }
+
+        self::$relationFields[$className][$relationName] = $config;
+    }
+
+    /**
      * Get the complete FluxConfig array
      * Segments is a flat, iterable array for easy looping
      *

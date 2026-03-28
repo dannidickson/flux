@@ -42,6 +42,9 @@ class FluxExtension extends Extension
                 if ($page->hasMethod('ElementalArea') && $page->ElementalArea()->exists()) {
                     FluxConfigService::addElements($page->ElementalArea()->Elements());
                 }
+
+                // Allow extensions to add additional config data
+                $this->getOwner()->extend('updateFluxConfig', $page);
             }
 
             Requirements::css("dannidickson/flux: client/dist/styles/preview.css");

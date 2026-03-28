@@ -43,7 +43,8 @@ function initTextEditing(channel: MessagePort): void {
 
         const owner = el.getAttribute('fx-owner') ?? null;
 
-        const editable = owner === null || openBlocks.has(owner);
+        const isGridFieldChild = el.closest('[fx-type="GridField"]') !== null;
+        const editable = owner === null || openBlocks.has(owner) || isGridFieldChild;
         el.contentEditable = String(editable);
 
         el.addEventListener('focus', () => {
@@ -230,7 +231,13 @@ function initBlockEditButtons(channel: MessagePort): void {
     });
 
     owners.forEach((owner) => {
-        let ownerEl: HTMLElement | null = document.querySelector<HTMLElement>(owner);
+        let ownerEl: HTMLElement | null = null;
+        try {
+            ownerEl = document.querySelector<HTMLElement>(owner);
+        } catch {
+            // owner is not a valid CSS selector (e.g. a numeric GridField record ID)
+            return;
+        }
 
         if (!ownerEl) {
             return;

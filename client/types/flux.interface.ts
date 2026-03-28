@@ -9,6 +9,7 @@ export interface FluxRelationFieldConfig {
     selector: string;
     actions: Array<'edit' | 'delete' | 'archive'>;
     ids: number[];
+    idMap?: Record<string, string>;
     Fields: Record<string, { bind: string; type: string }>;
 }
 

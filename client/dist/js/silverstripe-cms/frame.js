@@ -275,23 +275,21 @@ function applyConfig(config) {
     Segments,
     Fields
   } = config;
-  if (!Segments || !Fields) return;
+  if (!Segments) return;
   for (const segment of Segments) {
-    const segmentFields = Fields[segment.ClassName];
-    if (!segmentFields) {
-      logger_1.logger.log(`No fields found for ${segment.ClassName}`);
-      continue;
-    }
-    for (const [, field] of Object.entries(segmentFields)) {
-      const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
-      const element = document.querySelector(parts.join(' '));
-      if (!element) {
-        logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${parts.join(' ')}`);
-        continue;
+    const segmentFields = Fields?.[segment.ClassName];
+    if (segmentFields) {
+      for (const [, field] of Object.entries(segmentFields)) {
+        const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
+        const element = document.querySelector(parts.join(' '));
+        if (!element) {
+          logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${parts.join(' ')}`);
+          continue;
+        }
+        element.setAttribute('fx-key', field.key);
+        element.setAttribute('fx-type', field.type);
+        if (segment.owner) element.setAttribute('fx-owner', segment.owner);
       }
-      element.setAttribute('fx-key', field.key);
-      element.setAttribute('fx-type', field.type);
-      if (segment.owner) element.setAttribute('fx-owner', segment.owner);
     }
     const {
       RelationFields
@@ -300,18 +298,7 @@ function applyConfig(config) {
     const segmentRelationFields = RelationFields[segment.ClassName];
     if (!segmentRelationFields) continue;
     for (const [relationName, relationField] of Object.entries(segmentRelationFields)) {
-      if (!relationField.selector) {
-        logger_1.logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
-        continue;
-      }
-      const els = Array.from(document.querySelectorAll(relationField.selector));
-      els.forEach((el, index) => {
-        const id = relationField.ids?.[index];
-        if (id === undefined) {
-          logger_1.logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
-          return;
-        }
-        const owner = String(id);
+      const applyToElement = (el, owner) => {
         el.setAttribute('fx-type', 'GridField');
         el.setAttribute('fx-key', relationName);
         el.setAttribute('fx-grid-actions', JSON.stringify(relationField.actions));
@@ -328,6 +315,32 @@ function applyConfig(config) {
             childEl.setAttribute('fx-owner', owner);
           }
         }
+      };
+      // ID-based matching: idMap is { recordID: "cssSelector", ... }
+      if (relationField.idMap) {
+        for (const [id, selector] of Object.entries(relationField.idMap)) {
+          const el = document.querySelector(selector);
+          if (!el) {
+            logger_1.logger.warn(`Flux: Cannot find element for ${relationName} ID ${id} with selector: ${selector}`);
+            continue;
+          }
+          applyToElement(el, id);
+        }
+        continue;
+      }
+      // Index-based matching: ids is [id, id, ...] mapped to elements by position
+      if (!relationField.selector) {
+        logger_1.logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
+        continue;
+      }
+      const els = Array.from(document.querySelectorAll(relationField.selector));
+      els.forEach((el, index) => {
+        const id = relationField.ids?.[index];
+        if (id === undefined) {
+          logger_1.logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
+          return;
+        }
+        applyToElement(el, String(id));
       });
     }
   }
@@ -709,7 +722,8 @@ function initTextEditing(channel) {
     if (el.hasAttribute('fx-inline-ready')) return;
     el.setAttribute('fx-inline-ready', '1');
     const owner = el.getAttribute('fx-owner') ?? null;
-    const editable = owner === null || openBlocks.has(owner);
+    const isGridFieldChild = el.closest('[fx-type="GridField"]') !== null;
+    const editable = owner === null || openBlocks.has(owner) || isGridFieldChild;
     el.contentEditable = String(editable);
     el.addEventListener('focus', () => {
       const key = el.getAttribute('fx-key');
@@ -885,7 +899,13 @@ function initBlockEditButtons(channel) {
     owners.add(el.getAttribute('fx-owner'));
   });
   owners.forEach(owner => {
-    let ownerEl = document.querySelector(owner);
+    let ownerEl = null;
+    try {
+      ownerEl = document.querySelector(owner);
+    } catch {
+      // owner is not a valid CSS selector (e.g. a numeric GridField record ID)
+      return;
+    }
     if (!ownerEl) {
       return;
     }

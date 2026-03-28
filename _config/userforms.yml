@@ -1,0 +1,26 @@
+---
+Name: flux-userforms
+After:
+  - '#flux-form-field-extensions'
+Only:
+  classexists: 'SilverStripe\UserForms\Model\UserDefinedForm'
+---
+
+# Preview extension: hooks into FluxExtension's updateFluxConfig to add
+# filtered EditableFormField IDs to FluxConfig for the preview iframe.
+PageController:
+  extensions:
+    FluxUserFormsExtension: Flux\Extension\UserForms\FluxUserFormsExtension
+
+# CMS extension: swaps GridFieldEditableColumns with FluxGridFieldEditableColumns
+# so that inline-editable column fields get fx-* attributes for preview sync.
+SilverStripe\UserForms\Model\UserDefinedForm:
+  extensions:
+    FluxUserFormsCmsExtension: Flux\Extension\UserForms\FluxUserFormsCmsExtension
+
+# Set flux_fields on EditableFormField base class so all subclasses inherit it.
+# The Title binding uses .left which matches label.left, legend.left, p.left
+# across standard, multiple-option, and literal field holder templates.
+SilverStripe\UserForms\Model\EditableFormField:
+  flux_fields:
+    Title: ".left"

@@ -17,28 +17,25 @@ export function parse(root: HTMLElement | Document = document): FluxDirective[] 
  */
 export function applyConfig(config: FluxConfigStructure): void {
     const { Segments, Fields } = config;
-    if (!Segments || !Fields) return;
+    if (!Segments) return;
 
     for (const segment of Segments) {
-        const segmentFields = Fields[segment.ClassName];
+        const segmentFields = Fields?.[segment.ClassName];
 
-        if (!segmentFields) {
-            logger.log(`No fields found for ${segment.ClassName}`);
-            continue;
-        }
+        if (segmentFields) {
+            for (const [, field] of Object.entries(segmentFields)) {
+                const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
+                const element = document.querySelector(parts.join(' '));
 
-        for (const [, field] of Object.entries(segmentFields)) {
-            const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
-            const element = document.querySelector(parts.join(' '));
+                if (!element) {
+                    logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${parts.join(' ')}`);
+                    continue;
+                }
 
-            if (!element) {
-                logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${parts.join(' ')}`);
-                continue;
+                element.setAttribute('fx-key', field.key);
+                element.setAttribute('fx-type', field.type);
+                if (segment.owner) element.setAttribute('fx-owner', segment.owner);
             }
-
-            element.setAttribute('fx-key', field.key);
-            element.setAttribute('fx-type', field.type);
-            if (segment.owner) element.setAttribute('fx-owner', segment.owner);
         }
 
         const { RelationFields } = config;
@@ -48,22 +45,7 @@ export function applyConfig(config: FluxConfigStructure): void {
         if (!segmentRelationFields) continue;
 
         for (const [relationName, relationField] of Object.entries(segmentRelationFields)) {
-            if (!relationField.selector) {
-                logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
-                continue;
-            }
-
-            const els = Array.from(document.querySelectorAll<HTMLElement>(relationField.selector));
-
-            els.forEach((el, index) => {
-                const id = relationField.ids?.[index];
-                if (id === undefined) {
-                    logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
-                    return;
-                }
-
-                const owner = String(id);
-
+            const applyToElement = (el: HTMLElement, owner: string) => {
                 el.setAttribute('fx-type', 'GridField');
                 el.setAttribute('fx-key', relationName);
                 el.setAttribute('fx-grid-actions', JSON.stringify(relationField.actions));
@@ -81,6 +63,36 @@ export function applyConfig(config: FluxConfigStructure): void {
                         childEl.setAttribute('fx-owner', owner);
                     }
                 }
+            };
+
+            // ID-based matching: idMap is { recordID: "cssSelector", ... }
+            if (relationField.idMap) {
+                for (const [id, selector] of Object.entries(relationField.idMap)) {
+                    const el = document.querySelector<HTMLElement>(selector as string);
+                    if (!el) {
+                        logger.warn(`Flux: Cannot find element for ${relationName} ID ${id} with selector: ${selector}`);
+                        continue;
+                    }
+                    applyToElement(el, id);
+                }
+                continue;
+            }
+
+            // Index-based matching: ids is [id, id, ...] mapped to elements by position
+            if (!relationField.selector) {
+                logger.warn(`Flux: RelationField ${relationName} is missing a selector`);
+                continue;
+            }
+
+            const els = Array.from(document.querySelectorAll<HTMLElement>(relationField.selector));
+
+            els.forEach((el, index) => {
+                const id = relationField.ids?.[index];
+                if (id === undefined) {
+                    logger.warn(`Flux: no record ID for ${relationName}[${index}] — DOM and relation may be out of sync`);
+                    return;
+                }
+                applyToElement(el, String(id));
             });
         }
     }
