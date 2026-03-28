@@ -7,6 +7,7 @@ const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
 
 export const activeEditingFields = new Set<string>();
 const openBlocks = new Set<string>();
+const scrollHiders = new Set<() => void>();
 
 function fieldId(key: string, owner: string | null): string {
     return `${key}|${owner ?? ''}`;
@@ -25,6 +26,8 @@ export function initInlineEditing(channel: MessagePort | null): void {
     }
 
     registerFluxElements();
+
+    window.addEventListener('scroll', () => scrollHiders.forEach((hide) => hide()), { passive: true, capture: true });
 
     initTextEditing(channel);
     initFileUploadEditing(channel);
@@ -74,21 +77,43 @@ function initFileUploadEditing(channel: MessagePort): void {
         if (el.hasAttribute('fx-inline-ready')) return;
         el.setAttribute('fx-inline-ready', '1');
 
-        el.style.cursor = 'pointer';
+        const key = el.getAttribute('fx-key')!;
+        const owner = el.getAttribute('fx-owner') ?? null;
 
-        el.addEventListener('click', (e) => {
-            e.preventDefault();
+        const toolbar = document.createElement('flux-upload-toolbar');
+        document.body.appendChild(toolbar);
 
-            const key = el.getAttribute('fx-key')!;
-            const owner = el.getAttribute('fx-owner') ?? null;
+        let hideTimeout: ReturnType<typeof setTimeout> | null = null;
 
-            logger.log(`File upload click → key: "${key}"`);
+        const showToolbar = () => {
+            if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+            toolbar.show(el.getBoundingClientRect());
+        };
 
-            channel.postMessage({
-                type: 'fileUploadClick',
-                key,
-                owner,
-            });
+        const hideToolbar = () => {
+            hideTimeout = setTimeout(() => toolbar.hide(), 300);
+        };
+
+        scrollHiders.add(() => {
+            if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+            toolbar.hide();
+        });
+
+        el.addEventListener('mouseenter', showToolbar);
+        el.addEventListener('mouseleave', hideToolbar);
+        toolbar.addEventListener('mouseenter', () => {
+            if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+        });
+        toolbar.addEventListener('mouseleave', hideToolbar);
+
+        toolbar.onPreview(() => {
+            logger.log(`File upload preview → key: "${key}"`);
+            channel.postMessage({ type: 'fileUploadClick', key, owner });
+        });
+
+        toolbar.onDelete(() => {
+            logger.log(`File upload unlink → key: "${key}"`);
+            el.querySelector<HTMLElement>('.btn.uploadfield-item__remove-btn')?.click();
         });
     });
 }
@@ -113,6 +138,11 @@ function initLinkFieldEditing(channel: MessagePort): void {
         let hideTimeout: ReturnType<typeof setTimeout> | null = null;
 
         const hideDot = () => dot.hide();
+
+        scrollHiders.add(() => {
+            if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+            dot.hide();
+        });
 
         el.addEventListener('mouseleave', () => {
             hideTimeout = setTimeout(hideDot, 500);
@@ -178,6 +208,11 @@ function initGridFieldEditing(channel: MessagePort): void {
         const hideToolbar = () => {
             hideTimeout = setTimeout(() => toolbar.hide(), 300);
         };
+
+        scrollHiders.add(() => {
+            if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+            toolbar.hide();
+        });
 
         el.addEventListener('mouseenter', showToolbar);
         el.addEventListener('mouseleave', hideToolbar);

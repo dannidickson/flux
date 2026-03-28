@@ -1,13 +1,13 @@
 :host {
     position: fixed;
     z-index: 9999;
-    width: 20px;
-    height: 20px;
+    width: 2rem;
+    height: 2rem;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--flux-color-edit, #1A4877);
-    border: 2px solid rgba(255, 255, 255, 0.9);
+    border: 0.2rem solid rgba(255, 255, 255, 0.9);
     border-radius: 50%;
     box-sizing: border-box;
     cursor: pointer;

@@ -1,8 +1,9 @@
 import { FluxEditButton } from "./FluxEditButton";
 import { FluxGridToolbar } from "./FluxGridToolbar";
 import { FluxLinkDot } from "./FluxLinkDot";
+import { FluxUploadToolbar } from "./FluxUploadToolbar";
 
-export { FluxEditButton, FluxGridToolbar, FluxLinkDot };
+export { FluxEditButton, FluxGridToolbar, FluxLinkDot, FluxUploadToolbar };
 
 export function registerFluxElements(): void {
     if (!customElements.get("flux-edit-btn")) {
@@ -16,6 +17,10 @@ export function registerFluxElements(): void {
     if (!customElements.get("flux-link-dot")) {
         customElements.define("flux-link-dot", FluxLinkDot);
     }
+
+    if (!customElements.get("flux-upload-toolbar")) {
+        customElements.define("flux-upload-toolbar", FluxUploadToolbar);
+    }
 }
 
 declare global {
@@ -23,5 +28,6 @@ declare global {
         "flux-edit-btn": FluxEditButton;
         "flux-grid-toolbar": FluxGridToolbar;
         "flux-link-dot": FluxLinkDot;
+        "flux-upload-toolbar": FluxUploadToolbar;
     }
 }

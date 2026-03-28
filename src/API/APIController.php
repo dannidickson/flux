@@ -5,10 +5,10 @@ namespace Flux\API;
 use SilverStripe\CMS\Controllers\ContentController;
 use SilverStripe\CMS\Model\SiteTree;
 use SilverStripe\Control\Controller;
+use SilverStripe\Control\Director;
 use SilverStripe\Control\HTTPRequest;
 use SilverStripe\Control\HTTPResponse;
 use SilverStripe\Core\Injector\Injector;
-use SilverStripe\Dev\Debug;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\Versioned\Versioned;
 
@@ -234,14 +234,24 @@ class APIController extends Controller
             }
 
             $controller = Injector::inst()->create($controllerClass, $dataObject);
-            $controller->doInit();
+
+            $link = $dataObject->Link();
+            $relativeLink = Director::makeRelative($link) ?: '/';
+            $mockRequest = new HTTPRequest('GET', $relativeLink);
+            $mockRequest->setSession($this->getRequest()->getSession());
+            $controller->setRequest($mockRequest);
+            $controller->pushCurrent();
 
             try {
+                $controller->doInit();
                 $html = $controller->render();
-                return $html;
             } catch (\Exception $e) {
-                return $dataObject->forTemplate();
+                $html = $dataObject->forTemplate();
+            } finally {
+                $controller->popCurrent();
             }
+
+            return $html;
         }
 
         // For other DataObjects, use forTemplate

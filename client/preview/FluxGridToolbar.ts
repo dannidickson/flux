@@ -13,10 +13,10 @@ export class FluxGridToolbar extends HTMLElement {
     }
 
     addAction(action: string, icon: string, onClick: () => void): void {
+        const label = action.charAt(0).toUpperCase() + action.slice(1);
         const btn = document.createElement("button");
         btn.setAttribute("data-action", action);
-        btn.innerHTML = icon;
-        btn.title = action.charAt(0).toUpperCase() + action.slice(1);
+        btn.innerHTML = `${icon}<span>${label}</span>`;
         btn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();

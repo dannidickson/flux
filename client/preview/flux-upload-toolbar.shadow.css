@@ -37,6 +37,5 @@ button:hover {
     filter: brightness(1.25);
 }
 
-button[data-action="edit"]    { background: var(--flux-color-edit,    #1A4877); }
-button[data-action="delete"]  { background: var(--flux-color-delete,  #CB3E00); }
-button[data-action="archive"] { background: var(--flux-color-archive, #b7680a); }
+button[data-action="preview"] { background: var(--flux-color-edit,   #1A4877); }
+button[data-action="delete"]  { background: var(--flux-color-delete, #CB3E00); }

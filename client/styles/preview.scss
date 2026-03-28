@@ -1,10 +1,15 @@
+html,
+body {
+  font-size: 10px;
+}
+
 :root {
-    --flux-color-edit: #0B68F4;
-    --flux-color-delete: #CB3E00;
-    --flux-color-archive: #b7680a;
+  --flux-color-edit: #0b68f4;
+  --flux-color-delete: #cb3e00;
+  --flux-color-archive: #b7680a;
 }
 
 [fx-key]:hover {
-    outline: 2px solid #0B68F4;
-    outline-offset: 3px;
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
 }

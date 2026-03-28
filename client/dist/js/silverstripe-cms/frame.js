@@ -448,7 +448,7 @@ exports.FluxEditButton = FluxEditButton;
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
-exports.FluxLinkDot = exports.FluxGridToolbar = exports.FluxEditButton = void 0;
+exports.FluxUploadToolbar = exports.FluxLinkDot = exports.FluxGridToolbar = exports.FluxEditButton = void 0;
 exports.registerFluxElements = registerFluxElements;
 const FluxEditButton_1 = __webpack_require__(/*! ./FluxEditButton */ "./client/preview/FluxEditButton.ts");
 Object.defineProperty(exports, "FluxEditButton", ({
@@ -471,6 +471,13 @@ Object.defineProperty(exports, "FluxLinkDot", ({
     return FluxLinkDot_1.FluxLinkDot;
   }
 }));
+const FluxUploadToolbar_1 = __webpack_require__(/*! ./FluxUploadToolbar */ "./client/preview/FluxUploadToolbar.ts");
+Object.defineProperty(exports, "FluxUploadToolbar", ({
+  enumerable: true,
+  get: function () {
+    return FluxUploadToolbar_1.FluxUploadToolbar;
+  }
+}));
 function registerFluxElements() {
   if (!customElements.get("flux-edit-btn")) {
     customElements.define("flux-edit-btn", FluxEditButton_1.FluxEditButton);
@@ -480,6 +487,9 @@ function registerFluxElements() {
   }
   if (!customElements.get("flux-link-dot")) {
     customElements.define("flux-link-dot", FluxLinkDot_1.FluxLinkDot);
+  }
+  if (!customElements.get("flux-upload-toolbar")) {
+    customElements.define("flux-upload-toolbar", FluxUploadToolbar_1.FluxUploadToolbar);
   }
 }
 
@@ -515,10 +525,10 @@ class FluxGridToolbar extends HTMLElement {
     this._shadow.adoptedStyleSheets = [styles];
   }
   addAction(action, icon, onClick) {
+    const label = action.charAt(0).toUpperCase() + action.slice(1);
     const btn = document.createElement("button");
     btn.setAttribute("data-action", action);
-    btn.innerHTML = icon;
-    btn.title = action.charAt(0).toUpperCase() + action.slice(1);
+    btn.innerHTML = `${icon}<span>${label}</span>`;
     btn.addEventListener("click", e => {
       e.preventDefault();
       e.stopPropagation();
@@ -582,6 +592,72 @@ exports.FluxLinkDot = FluxLinkDot;
 
 /***/ }),
 
+/***/ "./client/preview/FluxUploadToolbar.ts":
+/*!*********************************************!*\
+  !*** ./client/preview/FluxUploadToolbar.ts ***!
+  \*********************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var __importDefault = this && this.__importDefault || function (mod) {
+  return mod && mod.__esModule ? mod : {
+    "default": mod
+  };
+};
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.FluxUploadToolbar = void 0;
+const flux_upload_toolbar_shadow_css_1 = __importDefault(__webpack_require__(/*! ./flux-upload-toolbar.shadow.css */ "./client/preview/flux-upload-toolbar.shadow.css"));
+const shadow_sheet_1 = __webpack_require__(/*! ./shadow-sheet */ "./client/preview/shadow-sheet.ts");
+const styles = (0, shadow_sheet_1.createSheet)(flux_upload_toolbar_shadow_css_1.default);
+const PREVIEW_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`;
+const DELETE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+class FluxUploadToolbar extends HTMLElement {
+  constructor() {
+    super();
+    this._shadow = this.attachShadow({
+      mode: 'open'
+    });
+    this._shadow.adoptedStyleSheets = [styles];
+    this._previewBtn = document.createElement('button');
+    this._previewBtn.setAttribute('data-action', 'preview');
+    this._previewBtn.innerHTML = `${PREVIEW_ICON}<span>Preview</span>`;
+    this._deleteBtn = document.createElement('button');
+    this._deleteBtn.setAttribute('data-action', 'delete');
+    this._deleteBtn.innerHTML = `${DELETE_ICON}<span>Delete</span>`;
+    this._shadow.appendChild(this._previewBtn);
+    this._shadow.appendChild(this._deleteBtn);
+  }
+  onPreview(handler) {
+    this._previewBtn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      handler();
+    });
+  }
+  onDelete(handler) {
+    this._deleteBtn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      handler();
+    });
+  }
+  show(rect) {
+    this.style.top = `${rect.top + 4}px`;
+    this.style.left = `${rect.right - 4}px`;
+    this.setAttribute('visible', '');
+  }
+  hide() {
+    this.removeAttribute('visible');
+  }
+}
+exports.FluxUploadToolbar = FluxUploadToolbar;
+
+/***/ }),
+
 /***/ "./client/preview/InlineEditor.ts":
 /*!****************************************!*\
   !*** ./client/preview/InlineEditor.ts ***!
@@ -603,6 +679,7 @@ const FILE_SELECTOR = '[fx-key][fx-type="UploadField"]';
 const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
 exports.activeEditingFields = new Set();
 const openBlocks = new Set();
+const scrollHiders = new Set();
 function fieldId(key, owner) {
   return `${key}|${owner ?? ''}`;
 }
@@ -617,6 +694,10 @@ function initInlineEditing(channel) {
     return;
   }
   (0, FluxElements_1.registerFluxElements)();
+  window.addEventListener('scroll', () => scrollHiders.forEach(hide => hide()), {
+    passive: true,
+    capture: true
+  });
   initTextEditing(channel);
   initFileUploadEditing(channel);
   initLinkFieldEditing(channel);
@@ -655,17 +736,48 @@ function initFileUploadEditing(channel) {
   document.querySelectorAll(FILE_SELECTOR).forEach(el => {
     if (el.hasAttribute('fx-inline-ready')) return;
     el.setAttribute('fx-inline-ready', '1');
-    el.style.cursor = 'pointer';
-    el.addEventListener('click', e => {
-      e.preventDefault();
-      const key = el.getAttribute('fx-key');
-      const owner = el.getAttribute('fx-owner') ?? null;
-      logger_1.logger.log(`File upload click → key: "${key}"`);
+    const key = el.getAttribute('fx-key');
+    const owner = el.getAttribute('fx-owner') ?? null;
+    const toolbar = document.createElement('flux-upload-toolbar');
+    document.body.appendChild(toolbar);
+    let hideTimeout = null;
+    const showToolbar = () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+      toolbar.show(el.getBoundingClientRect());
+    };
+    const hideToolbar = () => {
+      hideTimeout = setTimeout(() => toolbar.hide(), 300);
+    };
+    scrollHiders.add(() => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+      toolbar.hide();
+    });
+    el.addEventListener('mouseenter', showToolbar);
+    el.addEventListener('mouseleave', hideToolbar);
+    toolbar.addEventListener('mouseenter', () => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+    });
+    toolbar.addEventListener('mouseleave', hideToolbar);
+    toolbar.onPreview(() => {
+      logger_1.logger.log(`File upload preview → key: "${key}"`);
       channel.postMessage({
         type: 'fileUploadClick',
         key,
         owner
       });
+    });
+    toolbar.onDelete(() => {
+      logger_1.logger.log(`File upload unlink → key: "${key}"`);
+      el.querySelector('.btn.uploadfield-item__remove-btn')?.click();
     });
   });
 }
@@ -684,6 +796,13 @@ function initLinkFieldEditing(channel) {
     });
     let hideTimeout = null;
     const hideDot = () => dot.hide();
+    scrollHiders.add(() => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+      dot.hide();
+    });
     el.addEventListener('mouseleave', () => {
       hideTimeout = setTimeout(hideDot, 500);
     });
@@ -742,6 +861,13 @@ function initGridFieldEditing(channel) {
     const hideToolbar = () => {
       hideTimeout = setTimeout(() => toolbar.hide(), 300);
     };
+    scrollHiders.add(() => {
+      if (hideTimeout) {
+        clearTimeout(hideTimeout);
+        hideTimeout = null;
+      }
+      toolbar.hide();
+    });
     el.addEventListener('mouseenter', showToolbar);
     el.addEventListener('mouseleave', hideToolbar);
     toolbar.addEventListener('mouseenter', () => {
@@ -814,7 +940,7 @@ function initBlockEditButtons(channel) {
 /***/ (function(module) {
 
 "use strict";
-module.exports = ":host {\n    position: absolute;\n    top: 0;\n    right: 0;\n    z-index: 9999;\n    display: block;\n}\n\nbutton {\n    padding: 4px 10px;\n    font-size: 11px;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.03em;\n    line-height: 1.4;\n    color: #fff;\n    background: var(--flux-color-edit, #1A4877);\n    border: none;\n    border-radius: 0 0 0 4px;\n    cursor: pointer;\n    white-space: nowrap;\n    opacity: 0;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) button {\n    opacity: 1;\n}\n\nbutton:hover {\n    filter: brightness(1.2);\n}\n";
+module.exports = ":host {\n    position: absolute;\n    top: 0;\n    right: 0;\n    z-index: 9999;\n    display: block;\n}\n\nbutton {\n    padding: 0.4rem 1rem;\n    font-size: 1.1rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.03em;\n    line-height: 1.4;\n    color: #fff;\n    background: var(--flux-color-edit, #1A4877);\n    border: none;\n    border-radius: 0 0 0 0.4rem;\n    cursor: pointer;\n    white-space: nowrap;\n    opacity: 0;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) button {\n    opacity: 1;\n}\n\nbutton:hover {\n    filter: brightness(1.2);\n}\n";
 
 /***/ }),
 
@@ -825,7 +951,7 @@ module.exports = ":host {\n    position: absolute;\n    top: 0;\n    right: 0;\n
 /***/ (function(module) {
 
 "use strict";
-module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 3px;\n    padding: 4px;\n    background: rgba(15, 20, 28, 0.75);\n    backdrop-filter: blur(4px);\n    border-radius: 5px;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    width: 24px;\n    height: 24px;\n    padding: 0;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    color: #fff;\n    border: none;\n    border-radius: 4px;\n    cursor: pointer;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.3);\n}\n\nbutton[data-action=\"edit\"] {\n   background: var(--flux-color-edit, #1A4877);\n  }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete,  #CB3E00); }\nbutton[data-action=\"archive\"] { background: var(--flux-color-archive, #b7680a); }\n";
+module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 0.5rem;\n    padding: 0.5rem;\n    border-radius: 0.8rem;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    display: flex;\n    align-items: center;\n    gap: 0.5rem;\n    padding: 0.5rem 1.1rem;\n    font-size: 1.3rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.02em;\n    color: #fff;\n    border: none;\n    border-radius: 2rem;\n    cursor: pointer;\n    white-space: nowrap;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.25);\n}\n\nbutton[data-action=\"edit\"]    { background: var(--flux-color-edit,    #1A4877); }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete,  #CB3E00); }\nbutton[data-action=\"archive\"] { background: var(--flux-color-archive, #b7680a); }\n";
 
 /***/ }),
 
@@ -836,7 +962,18 @@ module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display
 /***/ (function(module) {
 
 "use strict";
-module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    width: 20px;\n    height: 20px;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    background: var(--flux-color-edit, #1A4877);\n    border: 2px solid rgba(255, 255, 255, 0.9);\n    border-radius: 50%;\n    box-sizing: border-box;\n    cursor: pointer;\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\n:host(:hover) {\n    filter: brightness(1.2);\n}\n";
+module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    width: 2rem;\n    height: 2rem;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    background: var(--flux-color-edit, #1A4877);\n    border: 0.2rem solid rgba(255, 255, 255, 0.9);\n    border-radius: 50%;\n    box-sizing: border-box;\n    cursor: pointer;\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\n:host(:hover) {\n    filter: brightness(1.2);\n}\n";
+
+/***/ }),
+
+/***/ "./client/preview/flux-upload-toolbar.shadow.css":
+/*!*******************************************************!*\
+  !*** ./client/preview/flux-upload-toolbar.shadow.css ***!
+  \*******************************************************/
+/***/ (function(module) {
+
+"use strict";
+module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 0.5rem;\n    padding: 0.5rem;\n    border-radius: 0.8rem;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    display: flex;\n    align-items: center;\n    gap: 0.5rem;\n    padding: 0.5rem 1.1rem;\n    font-size: 1.3rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.02em;\n    color: #fff;\n    border: none;\n    border-radius: 2rem;\n    cursor: pointer;\n    white-space: nowrap;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.25);\n}\n\nbutton[data-action=\"preview\"] { background: var(--flux-color-edit,   #1A4877); }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete, #CB3E00); }\n";
 
 /***/ }),
 

@@ -7,8 +7,8 @@
 }
 
 button {
-    padding: 4px 10px;
-    font-size: 11px;
+    padding: 0.4rem 1rem;
+    font-size: 1.1rem;
     font-family: system-ui, sans-serif;
     font-weight: 600;
     letter-spacing: 0.03em;
@@ -16,7 +16,7 @@ button {
     color: #fff;
     background: var(--flux-color-edit, #1A4877);
     border: none;
-    border-radius: 0 0 0 4px;
+    border-radius: 0 0 0 0.4rem;
     cursor: pointer;
     white-space: nowrap;
     opacity: 0;

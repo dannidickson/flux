@@ -1,15 +1,19 @@
 /*!**************************************************************************************************************************************************************************************************************************************************************************************************************************!*\
   !*** css ./node_modules/css-loader/dist/cjs.js??ruleSet[1].rules[0].use[1]!./node_modules/postcss-loader/dist/cjs.js??ruleSet[1].rules[0].use[2]!./node_modules/resolve-url-loader/index.js??ruleSet[1].rules[0].use[3]!./node_modules/sass-loader/dist/cjs.js??ruleSet[1].rules[0].use[4]!./client/styles/preview.scss ***!
   \**************************************************************************************************************************************************************************************************************************************************************************************************************************/
+html, body {
+  font-size: 10px;
+}
+
 :root {
   --flux-color-edit: #0B68F4;
   --flux-color-delete: #CB3E00;
   --flux-color-archive: #b7680a;
 }
 
-[fx-key]:hover {
-  outline: 2px solid #0B68F4;
-  outline-offset: 3px;
+[fx-key]:not([fx-type=UploadField]):not([fx-type=LinkField]):not([fx-type=GridField]):hover {
+  outline: 0.2rem solid #0B68F4;
+  outline-offset: 0.3rem;
 }
 
 /*# sourceMappingURL=preview.css.map*/
