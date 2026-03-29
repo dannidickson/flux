@@ -13,3 +13,7 @@ body {
   outline: 0.2rem solid var(--flux-color-edit);
   outline-offset: 0.3rem;
 }
+
+[fx-key]:has([fx-key]:hover) {
+  outline: none;
+}
