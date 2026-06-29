@@ -60,6 +60,14 @@ SilverStripe\LinkField\Controllers\LinkFieldController:
   extensions:
     FluxLinkFieldControllerExtension: Flux\Extension\Controller\LinkFieldControllerExtension
 
+SilverStripe\Forms\GridField\GridFieldDetailForm_ItemRequest:
+  extensions:
+    FluxGridFieldDetailFormControllerExtension: Flux\Extension\Controller\GridFieldDetailFormControllerExtension
+
+SilverStripe\Core\Injector\Injector:
+  SilverStripe\Forms\GridField\GridFieldDeleteAction:
+    class: Flux\Forms\FluxGridFieldDeleteAction
+
 # Disallow flux attributes on password fields
 # Throw an error if someone actually tries to add flux attributes to a password field
 SilverStripe\Forms\PasswordField:

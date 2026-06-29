@@ -1,0 +1,42 @@
+:host {
+    position: fixed;
+    z-index: 9999;
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border-radius: 0.8rem;
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+}
+
+:host([visible]) {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1.1rem;
+    font-size: 1.3rem;
+    font-family: system-ui, sans-serif;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #fff;
+    border: none;
+    border-radius: 2rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.1s;
+}
+
+button:hover {
+    filter: brightness(1.25);
+}
+
+button[data-action="edit"]    { background: var(--flux-color-edit,    #1A4877); }
+button[data-action="delete"]  { background: var(--flux-color-delete,  #CB3E00); }
+button[data-action="archive"] { background: var(--flux-color-archive, #b7680a); }

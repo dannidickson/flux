@@ -17,15 +17,11 @@ class LinkFieldExtension extends FormFieldExtension
     {
         $this->getOwner()->setAttribute("fx-event", "change");
         $this->getOwner()->setAttribute("fx-proxy", "input[type='hidden']");
-        $this->getOwner()->setAttribute("fx-proxy-type", "self");
+        $this->getOwner()->setAttribute("fx-proxy-type", "nextElementSibling");
 
         parent::applyFluxAttributes($key, $value, $fluxType);
+
+        $this->getOwner()->setAttribute("fx-type", 'LinkField');
     }
 
-    public function updateCMSActions($actions)
-    {
-        // No-op to prevent LinkField from removing action buttons
-        Debug::dump('aaa');
-        return $actions;
-    }
 }

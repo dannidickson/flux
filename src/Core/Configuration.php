@@ -10,8 +10,7 @@ class Configuration
     use Configurable;
     use Injectable;
 
-    private static bool $flux_components_enabled = true;
-    private static bool $flux_live_updates_enabled = true;
+    private static bool $enable_inline_editor = false;
 
     /**
      * Classes to exclude from flux config generation and live updates.

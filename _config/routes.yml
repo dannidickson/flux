@@ -6,5 +6,4 @@ After:
 ---
 SilverStripe\Control\Director:
   rules:
-    "flux/api//$Action": Flux\API\APIController
-    "flux/component//$Action/$Component": Flux\Component\ComponentController
+    "flux//$Action": Flux\Controller\FluxApiController

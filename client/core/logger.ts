@@ -1,36 +1,20 @@
-/**
- * Logger will only output for development env only
- */
-export default class Logger {
-    log: typeof console.log;
-    warn: typeof console.warn;
-    error: typeof console.error;
-    table: typeof console.table;
-    time: typeof console.time;
-    timeEnd: typeof console.timeEnd;
-    timeLog: typeof console.timeLog;
+// Logger only outputs in development.
 
-    constructor(env: any) {
-        if (env === 'development') {
-            // Bind console methods directly to preserve call stack location
-            this.log = console.log.bind(console);
-            this.warn = console.warn.bind(console);
-            this.error = console.error.bind(console);
-            this.table = console.table.bind(console);
-            this.time = console.time.bind(console);
-            this.timeEnd = console.timeEnd.bind(console);
-            this.timeLog = console.timeLog.bind(console);
-        } else {
-            // No-op functions for non-development
-            this.log = () => {};
-            this.warn = () => {};
-            this.error = () => {};
-            this.table = () => {};
-            this.time = () => {};
-            this.timeEnd = () => {};
-            this.timeLog = () => {};
-        }
-    }
+type ConsoleMethod = 'log' | 'warn' | 'error' | 'table' | 'time' | 'timeEnd' | 'timeLog';
+
+const isDev = process.env.NODE_ENV === 'development';
+const noop = () => {};
+
+function bind<K extends ConsoleMethod>(method: K): Console[K] {
+    return isDev ? (console[method].bind(console) as Console[K]) : (noop as Console[K]);
 }
 
-export const logger = new Logger(process.env.NODE_ENV);
+export const logger = {
+    log: bind('log'),
+    warn: bind('warn'),
+    error: bind('error'),
+    table: bind('table'),
+    time: bind('time'),
+    timeEnd: bind('timeEnd'),
+    timeLog: bind('timeLog'),
+};

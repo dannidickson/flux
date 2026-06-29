@@ -39,10 +39,16 @@ class FluxGridFieldEditableColumns extends BaseGridFieldEditableColumns
                         $fluxType = $componentType;
                     }
 
-                    // Apply flux attributes via the field's extension
-                    $field->applyFluxAttributes($fieldName, $fluxBind, $fluxType);
+                    // Owner token must match the resolver's segment owner and the
+                    // DOM stamp: elements use a selector anchor (#e2), other
+                    // records use the bare id.
+                    $ownerId = $record->hasMethod('getOwnerTarget')
+                        ? (string) $record->getOwnerTarget()
+                        : (string) $record->ID;
 
-                    $field->setAttribute('fx-event-type', 'templateUpdate');
+                    $field->applyFluxAttributes($fieldName, $fluxBind, $fluxType);
+                    $field->setAttribute('fx-owner', $ownerId);
+                    $field->setAttribute('fx-event-type', 'textUpdate');
                 }
             }
         }
