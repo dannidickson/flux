@@ -1,0 +1,58 @@
+/*!**************************************************************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/css-loader/dist/cjs.js??ruleSet[1].rules[0].use[1]!./node_modules/postcss-loader/dist/cjs.js??ruleSet[1].rules[0].use[2]!./node_modules/resolve-url-loader/index.js??ruleSet[1].rules[0].use[3]!./node_modules/sass-loader/dist/cjs.js??ruleSet[1].rules[0].use[4]!./client/styles/preview.scss ***!
+  \**************************************************************************************************************************************************************************************************************************************************************************************************************************/
+html,
+body {
+  font-size: 10px;
+}
+
+:root {
+  --flux-color-edit: #0b68f4;
+  --flux-color-delete: #cb3e00;
+  --flux-color-archive: #b7680a;
+  --flux-stage-backdrop: rgba(0, 0, 0, 0.45);
+  --flux-stage-ring: rgba(11, 104, 244, 0.7);
+}
+
+[data-flux-block]:not([data-flux-editing]):hover {
+  outline: 0.2rem solid #0b68f4;
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+[data-flux-editing] [fx-key]:hover {
+  outline: 0.2rem solid #0b68f4;
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+[fx-key]:not([fx-owner]):hover {
+  outline: 0.2rem solid #0b68f4;
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+#flux-stage-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: 9000;
+  cursor: pointer;
+}
+
+[data-flux-editing] {
+  position: relative;
+  z-index: 9001;
+  border-radius: 0.4rem;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 100vmax var(--flux-stage-backdrop);
+  clip-path: inset(-100vmax round 0.4rem);
+  transition: box-shadow 0.15s ease-out;
+}
+
+[data-flux-editing]:hover {
+  box-shadow: 0 0 0 0.4rem rgba(11, 104, 244, 0.7), 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 0.4rem var(--flux-stage-ring), 0 0 0 100vmax var(--flux-stage-backdrop);
+}
+
+/*# sourceMappingURL=preview.css.map*/

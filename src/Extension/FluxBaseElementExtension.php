@@ -5,6 +5,7 @@ namespace Flux\Extension;
 use SilverStripe\Core\Extension;
 use SilverStripe\ORM\DataObject;
 use DNADesign\Elemental\Models\BaseElement;
+use SilverStripe\Dev\Debug;
 
 /**
  * Flux extension for BaseElement
@@ -21,4 +22,5 @@ class FluxBaseElementExtension extends Extension
         /* @var BaseElement */
         return sprintf('#%s', $this->getOwner()->getAnchor());
     }
+
 }

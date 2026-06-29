@@ -4,6 +4,10 @@ SilverStripe\Admin\LeftAndMain:
   extensions:
     FluxLeftAndMainExtension: Flux\Extension\FluxLeftAndMainExtension
 
+SilverStripe\Forms\GridField\GridFieldDetailForm_ItemRequest:
+  extensions:
+    FluxGridDetailFormExtension: Flux\Extension\FluxGridDetailFormExtension
+
 SilverStripe\ORM\DataObject:
   extensions:
     FluxDataObjectExtension: Flux\Extension\FluxDataObjectExtension

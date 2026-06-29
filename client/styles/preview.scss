@@ -1,0 +1,75 @@
+html,
+body {
+  font-size: 10px;
+}
+
+:root {
+  --flux-color-edit: #0b68f4;
+  --flux-color-delete: #cb3e00;
+  --flux-color-archive: #b7680a;
+  --flux-stage-backdrop: rgba(0, 0, 0, 0.45);
+  --flux-stage-ring: rgba(11, 104, 244, 0.7);
+}
+
+// --- Hover outlines ---------------------------------------------------------
+//
+// Three cases, in priority order:
+//
+// 1. Closed block container hovered → outline the whole block; inner fields
+//    stay quiet (block button owns the affordance).
+// 2. Open block container → no outline on the container (the stage ring
+//    around it is the affordance now); inner fields outline on hover.
+// 3. Page-level fx-key (no fx-owner ancestor) → outline on hover.
+
+// Closed block — outline the block container itself.
+[data-flux-block]:not([data-flux-editing]):hover {
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+// Open block — fields inside it light up on hover.
+[data-flux-editing] [fx-key]:hover {
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+// Page-level fields (no fx-owner attribute) — always hoverable.
+[fx-key]:not([fx-owner]):hover {
+  outline: 0.2rem solid var(--flux-color-edit);
+  outline-offset: 0.3rem;
+}
+
+// --- Stage mode -------------------------------------------------------------
+//
+// We dim the page using a huge box-shadow on the open block itself rather
+// than a fixed-position backdrop element. This avoids the stacking-context
+// trap where a transformed/filtered ancestor of the block traps it below a
+// fixed backdrop, making the block itself look greyed out.
+//
+// #flux-stage-backdrop is kept around but transparent — it captures
+// click-outside without contributing any visual.
+
+#flux-stage-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: 9000;
+  cursor: pointer;
+}
+
+[data-flux-editing] {
+  position: relative;
+  z-index: 9001;
+  border-radius: 0.4rem;
+  // Backdrop dim is always on while the block is staged; the ring only
+  // appears on hover so the open block isn't visually "locked open".
+  box-shadow: 0 0 0 100vmax var(--flux-stage-backdrop);
+  clip-path: inset(-100vmax round 0.4rem);
+  transition: box-shadow 0.15s ease-out;
+}
+
+[data-flux-editing]:hover {
+  box-shadow:
+    0 0 0 0.4rem var(--flux-stage-ring),
+    0 0 0 100vmax var(--flux-stage-backdrop);
+}

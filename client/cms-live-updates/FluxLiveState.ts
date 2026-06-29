@@ -1,74 +1,57 @@
 /**
- * FluxLiveState - Manages form field state for live CMS preview updates
+ * FluxLiveState — in-memory form field state for live CMS preview updates.
  *
  * Uses FluxConfig.ChangeSet (keyed by ClassName) as the single source of truth
  * for field changes. Segments provides the structural map of the page.
  */
-
-import Logger, { logger } from "../core/logger";
-import type { FluxConfigSegment, FluxConfigStructure } from "../types/flux.interface";
+import { logger } from "../core/logger";
+import type {
+    FluxChangeSetPayload,
+    FluxConfigSegment,
+    FluxConfigStructure,
+} from "../types/flux.interface";
 
 class FluxLiveState {
-    private isLiveStateActive: boolean = true;
-    private pageID: number | null;
-    private className: string | null;
-    private segments: FluxConfigSegment[];
-    private objects: Map<string, {}>;
-
-    constructor() {
-        this.pageID = null;
-        this.className = null;
-        this.segments = [];
-        this.objects = new Map();
-        this.initializeFromFluxConfig();
-    }
+    private isLiveStateActive = true;
+    private pageIDOverride: number | null = null;
+    private classNameOverride: string | null = null;
 
     private getConfig(): FluxConfigStructure | null {
-        if (typeof window !== 'undefined' && (window as any).FluxConfig) {
-            return (window as any).FluxConfig as FluxConfigStructure;
+        if (typeof window !== "undefined" && window.FluxConfig) {
+            return window.FluxConfig;
         }
         return null;
     }
 
-    /**
-     * Initialize state from global FluxConfig
-     */
-    private initializeFromFluxConfig(): void {
-        const config = this.getConfig();
-        if (config) {
-            this.segments = config.Segments || [];
-
-            const pageSegment = this.segments.find(s => s.Type === 'Page');
-            if (pageSegment) {
-                this.pageID = pageSegment.ID ? Number(pageSegment.ID) : null;
-                this.className = pageSegment.ClassName || null;
-            }
-        }
+    private get segments(): FluxConfigSegment[] {
+        return this.getConfig()?.Segments ?? [];
     }
 
-    /**
-     * Update a field's value in the ChangeSet
-     */
-    public updateField(
+    private get pageID(): number | null {
+        if (this.pageIDOverride !== null) return this.pageIDOverride;
+        const page = this.segments.find((s) => s.Type === "Page");
+        return page?.ID ? Number(page.ID) : null;
+    }
+
+    private get className(): string | null {
+        if (this.classNameOverride !== null) return this.classNameOverride;
+        return this.segments.find((s) => s.Type === "Page")?.ClassName ?? null;
+    }
+
+    updateField(
         key: string,
-        value: any,
-        options?: {
-            type?: string,
-            owner?: string,
-        }
+        value: unknown,
+        options?: { type?: string; owner?: string },
     ): void {
-        let segment: FluxConfigSegment | undefined;
+        const segment = options?.owner
+            ? this.segments.find((s) => s.owner === options.owner)
+            : this.segments.find((s) => s.Type === "Page");
 
-        if (options?.owner) {
-            segment = this.segments.find(s => s.owner === options.owner);
-        } else {
-            segment = this.segments.find(s => s.Type === 'Page');
-        }
-
-        const resolvedClassName = segment?.ClassName || '';
+        const resolvedClassName = segment?.ClassName || "";
         const config = this.getConfig();
 
         if (config && resolvedClassName) {
+            // PHP sometimes serialises an empty ChangeSet as `[]` — normalise to `{}`.
             if (Array.isArray(config.ChangeSet)) {
                 config.ChangeSet = {};
             }
@@ -80,31 +63,21 @@ class FluxLiveState {
             config.ChangeSet[resolvedClassName][key] = value;
         }
 
-        if (process.env.NODE_ENV === 'development') {
-            // @ts-ignore
-            window.FluxLiveState = this;
+        if (process.env.NODE_ENV === "development") {
+            (window as Window & { FluxLiveState?: FluxLiveState }).FluxLiveState = this;
         }
     }
 
-    /**
-     * Get the full ChangeSet
-     */
-    public getChangeSet(): Record<string, Record<string, any>> {
+    getChangeSet(): Record<string, Record<string, unknown>> {
         const config = this.getConfig();
         return config?.ChangeSet || {};
     }
 
-    /**
-     * Find the segment metadata for a given owner
-     */
-    private getSegmentByOwner(owner: string): FluxConfigSegment | undefined {
-        return this.segments.find(s => s.owner === owner);
+    hasChanges(): boolean {
+        return Object.keys(this.getChangeSet()).length > 0;
     }
 
-    /**
-     * Clear all changed fields from the ChangeSet
-     */
-    public clear(): void {
+    clear(): void {
         const config = this.getConfig();
         if (config) {
             config.ChangeSet = {};
@@ -112,34 +85,27 @@ class FluxLiveState {
     }
 
     /**
-     * Build an enriched ChangeSet for the API, keyed by segment Type.
-     *
-     * Returns: {
-     *   "Page": { ClassName, ID, fields },
+     * Returns the ChangeSet structured by segment Type for the API:
+     *   "Page": { ClassName, ID, fields }
      *   "Element": [{ ClassName, ID, fields }, ...]
-     * }
      */
-    public buildChangeSetPayload(): Record<string, any> {
+    getChangeSetPayload(): Record<string, unknown> {
         const rawChangeSet = this.getChangeSet();
-        const payload: Record<string, any> = {};
+        const payload: Record<string, unknown> = {};
 
         for (const segment of this.segments) {
             const fields = rawChangeSet[segment.ClassName];
             if (!fields || Object.keys(fields).length === 0) continue;
 
-            const entry = {
-                ClassName: segment.ClassName,
-                ID: segment.ID,
-                fields,
-            };
+            const entry = { ClassName: segment.ClassName, ID: segment.ID, fields };
 
-            if (segment.Type === 'Page') {
-                payload['Page'] = entry;
+            if (segment.Type === "Page") {
+                payload["Page"] = entry;
             } else {
                 if (!payload[segment.Type]) {
                     payload[segment.Type] = [];
                 }
-                payload[segment.Type].push(entry);
+                (payload[segment.Type] as unknown[]).push(entry);
             }
         }
 
@@ -147,80 +113,38 @@ class FluxLiveState {
     }
 
     /**
-     * Get the state as JSON for sending to the server
+     * Full-page update payload. Throws if we don't yet know the page id.
      */
-    public toJSON(): object {
+    toPageUpdatePayload(): FluxChangeSetPayload {
+        if (this.pageID === null) {
+            throw new Error("Missing page id");
+        }
         return {
             pageID: this.pageID,
             className: this.className,
-            changeSet: this.buildChangeSetPayload(),
+            changeSet: this.getChangeSetPayload(),
         };
     }
 
     /**
-     * Get the segments array
+     * Block-scoped update payload, filtered to the given owner's segment.
      */
-    public getSegments(): FluxConfigSegment[] {
-        return this.segments;
-    }
-
-    /**
-     * Get only Element segments
-     */
-    public getElements(): FluxConfigSegment[] {
-        return this.segments.filter(s => s.Type === 'Element');
-    }
-
-    /**
-     * Send full state to the backend (page + all element changes)
-     */
-    public async sendUpdate(apiEndpoint: string): Promise<any> {
-        const state = this.toJSON();
-
-        if (this.pageID === null) {
-            throw new Error(`Missing page id`);
-        }
-
-        const url = `${apiEndpoint}/pageTemplateUpdate?pageID=${this.pageID}`;
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(state)
-        });
-
-        if (!response.ok) {
-            throw new Error(`Template update failed: ${response.statusText}`);
-        }
-
-        return response.json();
-    }
-
-    /**
-     * Send a block-scoped update for a specific segment owner
-     * Filters the ChangeSet to just the relevant segment's ClassName
-     */
-    public async sendBlockUpdate(apiEndpoint: string, owner: string): Promise<any> {
-        const segment = this.getSegmentByOwner(owner);
-
+    toBlockUpdatePayload(owner: string): FluxChangeSetPayload {
+        const segment = this.segments.find((s) => s.owner === owner);
         if (!segment) {
             throw new Error(`No segment found for owner: ${owner}`);
         }
 
-        const rawChangeSet = this.getChangeSet();
-        const fields = rawChangeSet[segment.ClassName];
-
+        const fields = this.getChangeSet()[segment.ClassName];
         if (!fields || Object.keys(fields).length === 0) {
             throw new Error(`No changes found for owner: ${owner}`);
         }
 
         if (this.pageID === null) {
-            throw new Error(`Missing page id`);
+            throw new Error("Missing page id");
         }
 
-        const payload = {
+        return {
             pageID: this.pageID,
             className: this.className,
             changeSet: {
@@ -231,56 +155,63 @@ class FluxLiveState {
                 }],
             },
         };
-
-        const url = `${apiEndpoint}/blockUpdate?pageID=${this.pageID}&owner=${encodeURIComponent(owner)}`;
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-        });
-
-        if (!response.ok) {
-            throw new Error(`Block update failed: ${response.statusText}`);
-        }
-
-        return response.json();
     }
 
-    public setPageID(pageID: number): void {
-        this.pageID = pageID;
-    }
-
-    public setClassName(className: string): void {
-        this.className = className;
-    }
-
-    public setLiveStateActive(isActive: boolean): void {
-        this.isLiveStateActive = isActive;
-    }
-
-    public getIsActive(): boolean {
-        return this.isLiveStateActive;
-    }
-
-    public addToObject(key: string): void {
-        this.objects.set(key, {
-            key: key,
-            type: 'object',
-        });
-    }
-
-    public getObjects(): Map<string, {}> {
-        return this.objects;
+    getSegments(): FluxConfigSegment[] {
+        return this.segments;
     }
 
     /**
-     * Get debug information
+     * Build a chunked save payload for saving.
+     * matches each ClassName to its segment, and emits one chunk per Type, Classname, ID
      */
-    public debug(): void {
-        logger.log('FluxLiveState:', {
+    getChunkedSavePayload(): {
+        context: { pageId: number | null; pageClass: string | null };
+        chunks: Array<{ kind: string; class: string; id: number; fields: Record<string, unknown> }>;
+    } {
+        const changeSet = this.getChangeSet();
+        const chunks: Array<{ kind: string; class: string; id: number; fields: Record<string, unknown> }> = [];
+
+        for (const segment of this.segments) {
+            const fields = changeSet[segment.ClassName];
+            if (!fields || Object.keys(fields).length === 0) continue;
+
+            chunks.push({
+                kind: segment.Type === "Page" || segment.Type === "Element" ? segment.Type : "DataObject",
+                class: segment.ClassName,
+                id: Number(segment.ID),
+                fields,
+            });
+        }
+
+        return {
+            context: { pageId: this.pageID, pageClass: this.className },
+            chunks,
+        };
+    }
+
+    getElements(): FluxConfigSegment[] {
+        return this.segments.filter((s) => s.Type === "Element");
+    }
+
+    setPageID(pageID: number): void {
+        this.pageIDOverride = pageID;
+    }
+
+    setClassName(className: string): void {
+        this.classNameOverride = className;
+    }
+
+    setLiveStateActive(isActive: boolean): void {
+        this.isLiveStateActive = isActive;
+    }
+
+    getIsActive(): boolean {
+        return this.isLiveStateActive;
+    }
+
+    debug(): void {
+        logger.log("FluxLiveState:", {
             pageID: this.pageID,
             className: this.className,
             segments: this.segments,

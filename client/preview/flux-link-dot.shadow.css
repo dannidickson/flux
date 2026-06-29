@@ -1,0 +1,26 @@
+:host {
+    position: fixed;
+    z-index: 9999;
+    width: 2rem;
+    height: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--flux-color-edit, #1A4877);
+    border: 0.2rem solid rgba(255, 255, 255, 0.9);
+    border-radius: 50%;
+    box-sizing: border-box;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s, background 0.1s;
+}
+
+:host([visible]) {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+:host(:hover) {
+    filter: brightness(1.2);
+}

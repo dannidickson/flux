@@ -13,6 +13,12 @@ class FluxRepository
      */
     public static function getFluxDataType(string $key, mixed $dataObjectConfig): string
     {
+        // Allow explicit type overrides via flux_fieldtypes config
+        $fluxFieldTypes = $dataObjectConfig->get("flux_fieldtypes");
+        if ($fluxFieldTypes && isset($fluxFieldTypes[$key])) {
+            return $fluxFieldTypes[$key];
+        }
+
         $dbConfig = $dataObjectConfig->get("db");
         $hasOneConfig = $dataObjectConfig->get("has_one");
         $configs = array_merge($dbConfig ?: [], $hasOneConfig ?: []);
@@ -45,9 +51,11 @@ class FluxRepository
             return "Boolean";
         }
 
-        if (str_contains($type, "")) {
-            return "Text";
+        if (str_contains($type, "Link")) {
+            return "LinkField";
         }
+
+        return "Text";
     }
 
     public static function getFluxFieldConfig(DataObject $dataObject): array|bool

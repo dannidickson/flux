@@ -10,38 +10,25 @@
 
 
 
+// Logger only outputs in development.
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.logger = void 0;
-/**
- * Logger will only output for development env only
- */
-class Logger {
-  constructor(env) {
-    if (env === 'development') {
-      // Bind console methods directly to preserve call stack location
-      this.log = console.log.bind(console);
-      this.warn = console.warn.bind(console);
-      this.error = console.error.bind(console);
-      this.table = console.table.bind(console);
-      this.time = console.time.bind(console);
-      this.timeEnd = console.timeEnd.bind(console);
-      this.timeLog = console.timeLog.bind(console);
-    } else {
-      // No-op functions for non-development
-      this.log = () => {};
-      this.warn = () => {};
-      this.error = () => {};
-      this.table = () => {};
-      this.time = () => {};
-      this.timeEnd = () => {};
-      this.timeLog = () => {};
-    }
-  }
+const isDev = "development" === 'development';
+const noop = () => {};
+function bind(method) {
+  return isDev ? console[method].bind(console) : noop;
 }
-exports["default"] = Logger;
-exports.logger = new Logger("development");
+exports.logger = {
+  log: bind('log'),
+  warn: bind('warn'),
+  error: bind('error'),
+  table: bind('table'),
+  time: bind('time'),
+  timeEnd: bind('timeEnd'),
+  timeLog: bind('timeLog')
+};
 
 /***/ })
 
@@ -86,22 +73,25 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 /**
- * FrameChannel can implement the onRecievedMessage either in the constructor, or via frame.onRecievedMessage
-
+ * FrameChannel can implement the onReceivedMessage either in the constructor, or via frame.onReceivedMessage
+ *
  * @example client/cms-live-updates/frame.ts
  */
 class FrameChannel {
-  constructor(onRecievedMessage) {
+  constructor(onReceivedMessage) {
     this.channel = null;
     this.messageHandler = event => this.setupMessageEvents(event);
     window.addEventListener("message", this.messageHandler);
     // Set the default handler or use the one passed in
-    this.onRecievedMessage = onRecievedMessage || this.defaultMessageHandler.bind(this);
+    this.onReceivedMessage = onReceivedMessage || this.defaultMessageHandler.bind(this);
     // Signal to parent that frame is ready (handles both initial load and reloads)
     if (window.parent !== window) {
+      logger_1.logger.log("[channel] frame posting FRAME_READY →", window.location.href);
       window.parent.postMessage({
         type: 'FRAME_READY'
       }, window.location.origin);
+    } else {
+      console.warn("[channel] frame has no parent — not in an iframe, FRAME_READY not sent");
     }
   }
   setupMessageEvents(event) {
@@ -110,18 +100,21 @@ class FrameChannel {
       return;
     }
     if (event.data.action === "Host:Create") {
-      logger_1.logger.log("Channel connected");
+      logger_1.logger.log("[channel] frame received Host:Create — port connected");
       if (!event.ports || event.ports.length === 0) {
-        logger_1.logger.error("No ports received!");
+        console.warn("[channel] Host:Create arrived with NO ports — channel dead");
         return;
       }
       this.channel = event.ports[0];
-      this.channel.onmessage = event => this.onRecievedMessage(event);
+      this.channel.onmessage = event => {
+        logger_1.logger.log("[channel] frame port message:", event.data?.type);
+        this.onReceivedMessage(event);
+      };
       this.channel.start();
     }
   }
   /**
-   * Fallback if the FrameChannel implementation doesnt include custom `onRecievedMessage` handler
+   * Fallback if the FrameChannel implementation doesnt include custom `onReceivedMessage` handler
    * @param event
    */
   defaultMessageHandler(event) {

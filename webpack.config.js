@@ -11,6 +11,7 @@ const PATHS = {
   core: Path.resolve('client/core'),
   channels: Path.resolve('client/channels'),
   lux: Path.resolve('client/lux'),
+  preview: Path.resolve('client/preview'),
 };
 
 const config = [
@@ -28,7 +29,7 @@ const config = [
     // Add TypeScript support
     frontendConfig.module.rules.push({
       test: /\.(ts|tsx)$/,
-      include: [PATHS.core, PATHS.channels, PATHS.cms, PATHS.lux],
+      include: [PATHS.core, PATHS.channels, PATHS.cms, PATHS.lux, PATHS.preview],
       use: [
         {
           loader: 'babel-loader',
@@ -42,11 +43,18 @@ const config = [
     // Add TypeScript extensions to resolve
     frontendConfig.resolve.extensions.push('.ts', '.tsx');
 
+    // Import *.shadow.css files as raw strings for Shadow DOM adoptedStyleSheets
+    frontendConfig.module.rules.push({
+      test: /\.shadow\.css$/,
+      type: 'asset/source',
+    });
+
     return frontendConfig;
   })(),
   new CssWebpackConfig('css', PATHS)
     .setEntry({
       bundle: `${PATHS.styles}/index.scss`,
+      preview: `${PATHS.styles}/preview.scss`,
     })
     .getConfig(),
 ];

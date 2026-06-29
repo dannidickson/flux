@@ -2,90 +2,85 @@
 
 namespace Flux\Extension;
 
-use Flux\Service\FluxConfigService;
+use Flux\Context\FluxContext;
+use Flux\Context\FluxContextResolver;
+use Flux\Core\Configuration;
 use SilverStripe\Core\Extension;
-use SilverStripe\Forms\DatalessField;
-use SilverStripe\Forms\FormAction;
 use SilverStripe\Forms\LiteralField;
 use SilverStripe\Security\Security;
+use SilverStripe\Security\SecurityToken;
 use SilverStripe\View\Requirements;
-use SilverStripe\Forms\Tip;
 
 /**
- * Extension for LeftAndMain (CMS admin controller)
- * Handles the host-side (CMS admin) requirements and FluxConfig
+ * v2: thin shim around FluxContextResolver.
+ *
+ * Responsibilities:
+ *  - Mount host JS.
+ *  - Register a `FluxBootstrap` fragment on PjaxResponseNegotiator so any
+ *    PJAX response carries a fresh bootstrap payload.
+ *  - Inject inline window.FluxBootstrap for the initial full-page load.
+ *
+ * v1's `setActiveRelation`, GridFieldDetailForm shimming, and middleware
+ * body-rewriting are gone — `LeftAndMain::currentRecordID()` already
+ * resolves nested GridField items via `CMSMainCurrentRecordID`.
  */
 class FluxLeftAndMainExtension extends Extension
 {
-    /**
-     * Add requirements and register current record with FluxConfigService
-     */
     public function onBeforeInit(): void
     {
-        $member = Security::getCurrentUser();
-
-        if (!$member) {
+        if (!Security::getCurrentUser()) {
             return;
         }
 
-        // Clear any existing config data from other contexts
-        FluxConfigService::reset();
-
-        // Add host-side JavaScript requirements
         Requirements::javascript('dannidickson/flux: client/dist/js/bind/host.js');
         Requirements::javascript('dannidickson/flux: client/dist/js/silverstripe-cms/host.js');
-
-        // Register the currently edited record
-        $recordID = $this->getOwner()->currentRecordID();
-        $modelClass = $this->getOwner()->currentRecord();
-
-
-
-        if ($recordID && $modelClass && class_exists($modelClass)) {
-            $record = $modelClass::get()->byID($recordID);
-            if ($record) {
-                // Register the record as the page
-                FluxConfigService::setPage($record);
-
-                // Register elements if this record has them
-                if ($record->hasMethod('ElementalArea') && $record->ElementalArea()->exists()) {
-                    FluxConfigService::addElements($record->ElementalArea()->Elements());
-                }
-
-            }
-        }
     }
 
-    /**
-     * Output window.FluxConfig for CMS admin side
-     */
     public function onAfterInit(): void
     {
-        $member = Security::getCurrentUser();
-
-        if (!$member) {
+        if (!Security::getCurrentUser()) {
             return;
         }
 
-
-        // Output FluxConfig if we have data
-        if (FluxConfigService::hasConfig()) {
-            Requirements::customScript(
-                "window.FluxConfig = " . json_encode(FluxConfigService::getConfig()) . ";",
-                'flux-config-host'
-            );
+        $payload = $this->getBootstrap();
+        if ($payload === null) {
+            return;
         }
+
+        Requirements::customScript(
+            'window.FluxBootstrap = ' . json_encode($payload) . ';',
+            'flux-bootstrap',
+        );
     }
 
     public function updateEditForm(&$form)
     {
-        $currentRecord = $this->getOwner()->currentRecord();
-        if ($currentRecord && $currentRecord->hasMethod('getFluxEnabled')) {
-            $fluxCMSUI = $this->getOwner()->renderWith($this->getOwner()->getTemplatesWithSuffix('_FluxCmsActionsUI'));
-            $form->Actions()->push(
-                LiteralField::create('FluxCMSUIPlaceholder', $fluxCMSUI)
+        $payload = $this->getBootstrap();
+        if ($payload !== null) {
+            $json = htmlspecialchars(json_encode($payload), ENT_NOQUOTES | ENT_HTML5, 'UTF-8');
+            $form->Fields()->push(
+                LiteralField::create(
+                    'FluxBootstrapData',
+                    '<script type="application/json" id="flux-bootstrap-data">' . $json . '</script>',
+                ),
             );
         }
     }
 
+    private function getBootstrap(): ?array
+    {
+        $context = (new FluxContextResolver())->forLeftAndMain($this->getOwner());
+
+        if (!$context->hasContent()) {
+            return null;
+        }
+
+        return [
+            'context' => $context->jsonSerialize(),
+            'contextHint' => $context->toContextHint(),
+            'contextUrl' => '/flux/context',
+            'csrf' => SecurityToken::getSecurityID(),
+            'inlineEditorEnabled' => (bool) Configuration::config()->get('enable_inline_editor'),
+        ];
+    }
 }

@@ -1,0 +1,13 @@
+---
+Name: flux-userforms
+After:
+  - '#flux-form-field-extensions'
+Only:
+  classexists: 'SilverStripe\UserForms\Model\UserDefinedForm'
+---
+
+# Preview extension: hooks into FluxExtension's updateFluxConfig to add
+# filtered EditableFormField IDs to FluxConfig for the preview iframe.
+SilverStripe\UserForms\Model\UserDefinedForm:
+  extensions:
+    FluxUserFormsExtension: Flux\Extension\UserForms\FluxUserFormsExtension

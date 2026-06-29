@@ -16,5 +16,6 @@ class CheckboxFieldExtension extends FormFieldExtension
         parent::applyFluxAttributes($key, $value, $fluxType);
 
         $this->getOwner()->setAttribute("fx-event", "click");
+        $this->getOwner()->setAttribute("fx-type", 'CheckBoxField');
     }
 }
