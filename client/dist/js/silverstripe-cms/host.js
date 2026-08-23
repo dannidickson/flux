@@ -57,14 +57,9 @@ class HostChannel {
     this.sendPortToFrame();
   }
   /**
-   * Proactively establish the channel with a frame that is ALREADY loaded.
-   *
-   * `FRAME_READY` only helps when the frame announces itself after the host's
-   * listener exists. On a direct refresh the parent's `window.load` (which
-   * builds the host) fires AFTER the iframe has loaded and already posted
-   * `FRAME_READY` — so the host misses it and the channel never forms. Calling
-   * this on init covers that case; the `FRAME_READY` listener still covers
-   * frames that (re)load later.
+   * Establish the channel with a frame that is already loaded.
+   * On direct refresh, the parent's window.load fires after iframe load, so
+   * the FRAME_READY message is missed; this call covers that race condition.
    */
   connectExistingFrame() {
     if (!this.frame?.contentWindow) return;
@@ -395,7 +390,6 @@ class FluxApiClient {
   /**
    * Persist a chunked changeset via /flux/save. Server writes in
    * DataObject → Element → Page order inside a single transaction.
-   * @TODO add a type rather than being lazy
    */
   async sendChunkedSave(payload) {
     const response = await fetch("/flux/save", {
@@ -427,8 +421,7 @@ exports["default"] = FluxApiClient;
  * Bridges the v2 `window.FluxBootstrap` payload into the v1 `window.FluxConfig`
  * shape that FluxLiveState / FluxDirectiveManager already consume.
  *
- * Phase 2 keeps existing client modules unchanged. Phase 3 will drop the
- * FluxConfig shape entirely.
+ * @todo need to merge in the various states from config to livestate into a single var
  */
 Object.defineProperty(exports, "__esModule", ({
   value: true
@@ -459,9 +452,16 @@ function adaptContextToFluxConfig(context) {
   const previous = window.FluxConfig;
   const previousPage = previous?.Segments?.find(s => s.Type === "Page");
   const nextPage = context.segments.find(s => s.Type === "Page");
+  const sameRecord = !!previousPage && !!nextPage && String(previousPage.ID) === String(nextPage.ID) && previousPage.ClassName === nextPage.ClassName;
   let changeSet = {};
-  if (previousPage && nextPage && String(previousPage.ID) === String(nextPage.ID) && previousPage.ClassName === nextPage.ClassName) {
+  if (sameRecord) {
     changeSet = previous?.ChangeSet ?? {};
+  } else if (previous?.ChangeSet && Object.keys(previous.ChangeSet).length > 0) {
+    logger_1.logger.error("Discarding pending changes: context switched records", {
+      from: previousPage ? `${previousPage.ClassName}#${previousPage.ID}` : null,
+      to: nextPage ? `${nextPage.ClassName}#${nextPage.ID}` : null,
+      discarded: Object.keys(previous.ChangeSet)
+    });
   }
   return {
     Segments: context.segments,
@@ -477,11 +477,9 @@ function applyContext(context) {
   logger_1.logger.log("Applied Flux context:", context.scope);
 }
 /**
- * Read the most-specific FluxBootstrap script tag in the document. When a
- * nested GridField item is being edited, both the LeftAndMain extension
- * and the GridFieldDetailForm extension push a `<script id="flux-bootstrap-data">`
- * into their respective forms — the inner one is later in DOM order and
- * should win.
+ * Read the most-specific FluxBootstrap script tag in the document.
+ * When nested items are edited, both LeftAndMain and GridFieldDetailForm add a
+ * `<script id="flux-bootstrap-data">` — the inner one (later in DOM order) takes precedence.
  */
 function readBootstrapScriptTag() {
   const nodes = document.querySelectorAll('script#flux-bootstrap-data');
@@ -521,11 +519,8 @@ function currentContextHint() {
 }
 /**
  * Host PJAX hook: read the FluxBootstrap from the most-specific
- * #flux-bootstrap-data <script> tag in the swapped form HTML.
- *
- * Standard CMS PJAX requests only fetch the CurrentForm/Content/Breadcrumbs
- * fragments — a custom fragment wouldn't be included — so the bootstrap
- * rides along inside the form HTML instead.
+ * #flux-bootstrap-data <script> tag in the swapped form HTML. Standard CMS PJAX
+ * requests only fetch CurrentForm/Content/Breadcrumbs, so the bootstrap is included inside the form HTML.
  */
 function applyPjaxBootstrapFromDom() {
   const payload = readBootstrapScriptTag();
@@ -548,8 +543,8 @@ async function fetchFluxContext(hint) {
 }
 /**
  * Fetch the context payload without applying it. Lets callers decide whether
- * to apply — the frame's boot fetch must not clobber a more-specific scope the
- * host may have pushed while the fetch was in flight.
+ * to apply — the frame's boot fetch must not overwrite a more-specific scope the
+ * host may have sent while the fetch was still running.
  */
 async function fetchContextPayload(hint) {
   const params = new URLSearchParams();
@@ -604,6 +599,33 @@ const CMS_FRAME = 'iframe[name="cms-preview-iframe"]';
 const PAGE_COOLDOWN_MS = 500;
 const BLOCK_COOLDOWN_MS = 500;
 /**
+ * Elemental saves and publishes a single block through its own JSON API from
+ * React, so those writes never reach entwine's `aftersubmitform` or jQuery's
+ * `ajaxComplete` — watching fetch is the only hook that sees them.
+ */
+const BLOCK_SAVE_URL = /\/elemental-area\/api\/(saveForm|publish|unpublish)\b/;
+/**
+ * Which block a save was for. `saveForm` carries the id in the path
+ * (`POST api/saveForm/$ID`); publish and unpublish carry it in the JSON body.
+ * Returns null when neither says — the caller must not guess.
+ */
+function blockIdFromSave(url, init) {
+  const fromPath = url.match(/\/api\/saveForm\/(\d+)/);
+  if (fromPath) {
+    return fromPath[1];
+  }
+  const body = init?.body;
+  if (typeof body !== "string") {
+    return null;
+  }
+  try {
+    const id = JSON.parse(body)?.id;
+    return id === undefined || id === null ? null : String(id);
+  } catch {
+    return null;
+  }
+}
+/**
  * Returns a predicate that reports whether a given key has "cooled down" since
  * its last allowed call. Calling the predicate updates the last-call time.
  */
@@ -616,6 +638,27 @@ function createCooldownGate(ms) {
     return true;
   };
 }
+/**
+ * The CMS posts its edit form with `X-Pjax: CurrentForm,Breadcrumbs,ValidationResult`,
+ * so the response body is a fragment map whose ValidationResult entry wraps
+ * `{ isValid, messages }` in a `<script type="application/json">` tag (see
+ * RequestHandler::prepareDataForPjax).
+ *
+ * Only a definite failure counts: a response we can't classify is treated as a
+ * successful save, which is the same assumption the CMS makes of it.
+ */
+function validationFailed(xhr) {
+  const body = xhr?.responseText;
+  if (!body) return false;
+  try {
+    const fragment = JSON.parse(body)?.ValidationResult;
+    if (typeof fragment !== "string") return false;
+    const script = new DOMParser().parseFromString(fragment, "text/html").querySelector('script[type="application/json"]');
+    return script?.textContent ? JSON.parse(script.textContent).isValid === false : false;
+  } catch {
+    return false;
+  }
+}
 class FluxHostCoordinator {
   constructor(url, $) {
     this.$ = $;
@@ -623,6 +666,7 @@ class FluxHostCoordinator {
     this.blockReady = createCooldownGate(BLOCK_COOLDOWN_MS);
     this.observers = [];
     this.suppressModalUpdate = false;
+    this.unwatchSaves = null;
     this.hostChannel = new HostChannel_1.default(url, CMS_FRAME);
     this.fluxState = new FluxLiveState_1.default();
     this.api = new FluxApiClient_1.default(API_ENDPOINT);
@@ -633,6 +677,7 @@ class FluxHostCoordinator {
     this.setupModalObserver();
     this.setupFluxBindings();
     this.setupPjaxHandler();
+    this.setupSaveHandlers();
     // The frame may have loaded (and posted FRAME_READY) before this host
     // existed — e.g. on a direct refresh, where window.load fires after the
     // iframe. Connect to it now so we don't sit on a dead channel.
@@ -739,12 +784,20 @@ class FluxHostCoordinator {
   setupModalObserver() {
     const bodyElement = document.body;
     if (!bodyElement) return;
+    let modalOpen = bodyElement.classList.contains("modal-open");
     const observer = this.observeClassAttribute(bodyElement, target => {
-      if (target.classList.contains("modal-open")) {
+      const isOpen = target.classList.contains("modal-open");
+      if (isOpen === modalOpen) return;
+      modalOpen = isOpen;
+      if (isOpen) {
         logger_1.logger.log("Modal opened");
         return;
       }
       window.setTimeout(() => {
+        if (!this.fluxState.getIsActive()) {
+          logger_1.logger.log("Modal closed — no live preview, skipping update");
+          return;
+        }
         if (this.suppressModalUpdate) {
           logger_1.logger.log("Modal closed — skipping update (TinyMCE handled)");
           this.suppressModalUpdate = false;
@@ -772,15 +825,22 @@ class FluxHostCoordinator {
         html: response.html,
         changedFields: response.changedFields
       });
+      if (response.spliceMisses?.length) {
+        logger_1.logger.error("Element regions not found. May stale content for:", response.spliceMisses);
+      }
       if (response.segmentTemplateChanges) {
         const {
           Elements
         } = response.segmentTemplateChanges;
-        for (const [id, html] of Object.entries(Elements)) {
+        for (const [id, fragment] of Object.entries(Elements)) {
+          if (!fragment.owner) {
+            logger_1.logger.error(`Element ${id} has no owner target; skipping block`);
+            continue;
+          }
           this.hostChannel.broadcastMessage({
             type: "blockUpdate",
-            html,
-            targetOwner: `#e${id}`
+            html: fragment.html,
+            targetOwner: fragment.owner
           });
         }
       }
@@ -870,6 +930,87 @@ class FluxHostCoordinator {
       });
     });
   }
+  /**
+   * A save makes the database authoritative for the record being edited, so
+   * the changes we recorded on the way there have to go.
+   *
+   * The preview iframe reloads immediately afterwards — silverstripe/admin's
+   * own `onaftersubmitform` calls `_initialiseFromContent()`, and elemental
+   * refreshes the preview after a block write — and the FRAME_READY that
+   * follows would otherwise replay the ChangeSet over the freshly saved
+   * render, reverting the preview to whatever we last captured. For a rich
+   * text field that is several keystrokes behind what was actually written.
+   *
+   * Letting the reload stand rather than pushing a render of our own also
+   * keeps the preview on whichever stage the CMS is previewing;
+   * /flux/pageTemplateUpdate always renders Draft.
+   */
+  setupSaveHandlers() {
+    const coordinator = this;
+    // Page and GridField detail forms submit through entwine.
+    this.$.entwine("flux", function ($) {
+      $(".cms-edit-form").entwine({
+        onaftersubmitform: function (event, data) {
+          coordinator.handleRecordSaved("form submit", data?.xhr);
+          this._super(event, data);
+        }
+      });
+    });
+    this.watchBlockSaves();
+  }
+  /**
+   * Elemental's block save / publish / unpublish go out as fetch calls from
+   * React, so we watch fetch itself. Responses are only inspected, never
+   * read — consuming the body here would starve the real caller.
+   */
+  watchBlockSaves() {
+    if (this.unwatchSaves) return;
+    const originalFetch = window.fetch;
+    if (!originalFetch) return;
+    // Chrome throws "Illegal invocation" on a fetch called off the window.
+    const callOriginal = originalFetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await callOriginal(...args);
+      try {
+        const [resource] = args;
+        const url = typeof resource === "string" ? resource : resource instanceof Request ? resource.url : String(resource);
+        if (response.ok && BLOCK_SAVE_URL.test(url)) {
+          this.handleBlockSaved(url, args[1]);
+        }
+      } catch (error) {
+        logger_1.logger.error("Could not tell whether a fetch was a block save — stale changes may be replayed over it:", error);
+      }
+      return response;
+    };
+    this.unwatchSaves = () => {
+      window.fetch = originalFetch;
+    };
+  }
+  handleRecordSaved(source, xhr) {
+    if (validationFailed(xhr)) {
+      logger_1.logger.warn(`Save (${source}) failed validation — keeping recorded changes so the preview still shows them`);
+      return;
+    }
+    const dropped = this.fluxState.clear();
+    if (!dropped.length) return;
+    logger_1.logger.log(`Saved (${source}) — dropped recorded changes, the preview reload renders from the database:`, dropped);
+  }
+  /**
+   * A block write makes the database authoritative for that block alone. The
+   * page's own pending edits, and every other block's, are still unsaved and
+   * must survive — dropping them here would silently discard work the user
+   * can still see in the preview.
+   */
+  handleBlockSaved(url, init) {
+    const elementId = blockIdFromSave(url, init);
+    if (elementId === null) {
+      logger_1.logger.error(`Block write to ${url} did not identify its element — keeping all recorded changes, ` + 'so the preview may replay a stale value over the saved one.');
+      return;
+    }
+    const dropped = this.fluxState.clearRecord("Element", elementId);
+    if (!dropped.length) return;
+    logger_1.logger.log(`Block ${elementId} saved — dropped its recorded changes, the rest of the page keeps its own:`, dropped);
+  }
   setupFluxBindings() {
     const bindingManager = new FluxDirectiveManager_1.default(this.$, this.fluxState, owner => this.triggerUpdate(owner), this.hostChannel, (key, value, owner) => this.sendPatchUpdate(key, value, owner));
     bindingManager.initialize();
@@ -877,6 +1018,8 @@ class FluxHostCoordinator {
   destroy() {
     this.observers.forEach(observer => observer.disconnect());
     this.observers = [];
+    this.unwatchSaves?.();
+    this.unwatchSaves = null;
     this.hostChannel.destroy();
   }
 }
@@ -926,20 +1069,29 @@ class FluxLiveState {
     if (this.classNameOverride !== null) return this.classNameOverride;
     return this.segments.find(s => s.Type === "Page")?.ClassName ?? null;
   }
+  segmentKey(segment) {
+    return `${segment.Type}:${segment.ClassName}:${segment.ID}`;
+  }
   updateField(key, value, options) {
     const segment = options?.owner ? this.segments.find(s => s.owner === options.owner) : this.segments.find(s => s.Type === "Page");
-    const resolvedClassName = segment?.ClassName || "";
     const config = this.getConfig();
-    if (config && resolvedClassName) {
-      // PHP sometimes serialises an empty ChangeSet as `[]` — normalise to `{}`.
-      if (Array.isArray(config.ChangeSet)) {
-        config.ChangeSet = {};
-      }
-      if (!config.ChangeSet[resolvedClassName]) {
-        config.ChangeSet[resolvedClassName] = {};
-      }
-      config.ChangeSet[resolvedClassName][key] = value;
+    if (!segment) {
+      logger_1.logger.error(`No segment for field "${key}" (owner="${options?.owner ?? "<page>"}") — change not recorded, preview will fall back to saved content. Known owners:`, this.segments.map(s => s.owner ?? `${s.Type}:${s.ID}`));
+      return;
     }
+    if (!config) {
+      logger_1.logger.error(`No FluxConfig available — change to "${key}" dropped`);
+      return;
+    }
+    // PHP sometimes serialises an empty ChangeSet as `[]` — normalise to `{}`.
+    if (Array.isArray(config.ChangeSet)) {
+      config.ChangeSet = {};
+    }
+    const recordKey = this.segmentKey(segment);
+    if (!config.ChangeSet[recordKey]) {
+      config.ChangeSet[recordKey] = {};
+    }
+    config.ChangeSet[recordKey][key] = value;
     if (true) {
       window.FluxLiveState = this;
     }
@@ -951,11 +1103,37 @@ class FluxLiveState {
   hasChanges() {
     return Object.keys(this.getChangeSet()).length > 0;
   }
+  /**
+   * Forget every recorded change. Returns the record keys that were dropped
+   * so callers can report what they threw away.
+   */
   clear() {
     const config = this.getConfig();
-    if (config) {
-      config.ChangeSet = {};
+    if (!config) {
+      return [];
     }
+    const dropped = Object.keys(config.ChangeSet ?? {});
+    config.ChangeSet = {};
+    return dropped;
+  }
+  /**
+   * Clear the record by type
+   * EG: 'Element',
+   *
+   * Returns the record keys that were cleared.
+   */
+  clearRecord(type, id) {
+    const config = this.getConfig();
+    if (config === null || !config.ChangeSet) {
+      return [];
+    }
+    const clearedKeys = Object.keys(config.ChangeSet).filter(key => {
+      return key.startsWith(`${type}:`) && key.endsWith(`:${id}`);
+    });
+    for (const recordKey of clearedKeys) {
+      delete config.ChangeSet[recordKey];
+    }
+    return clearedKeys;
   }
   /**
    * Returns the ChangeSet structured by segment Type for the API:
@@ -965,9 +1143,12 @@ class FluxLiveState {
   getChangeSetPayload() {
     const rawChangeSet = this.getChangeSet();
     const payload = {};
+    const consumed = new Set();
     for (const segment of this.segments) {
-      const fields = rawChangeSet[segment.ClassName];
+      const recordKey = this.segmentKey(segment);
+      const fields = rawChangeSet[recordKey];
       if (!fields || Object.keys(fields).length === 0) continue;
+      consumed.add(recordKey);
       const entry = {
         ClassName: segment.ClassName,
         ID: segment.ID,
@@ -981,6 +1162,10 @@ class FluxLiveState {
         }
         payload[segment.Type].push(entry);
       }
+    }
+    const orphaned = Object.keys(rawChangeSet).filter(recordKey => !consumed.has(recordKey) && Object.keys(rawChangeSet[recordKey] ?? {}).length > 0);
+    if (orphaned.length) {
+      logger_1.logger.error("Pending changes have no matching segment in the current context and will not be sent:", orphaned);
     }
     return payload;
   }
@@ -1005,7 +1190,7 @@ class FluxLiveState {
     if (!segment) {
       throw new Error(`No segment found for owner: ${owner}`);
     }
-    const fields = this.getChangeSet()[segment.ClassName];
+    const fields = this.getChangeSet()[this.segmentKey(segment)];
     if (!fields || Object.keys(fields).length === 0) {
       throw new Error(`No changes found for owner: ${owner}`);
     }
@@ -1035,7 +1220,7 @@ class FluxLiveState {
     const changeSet = this.getChangeSet();
     const chunks = [];
     for (const segment of this.segments) {
-      const fields = changeSet[segment.ClassName];
+      const fields = changeSet[this.segmentKey(segment)];
       if (!fields || Object.keys(fields).length === 0) continue;
       chunks.push({
         kind: segment.Type === "Page" || segment.Type === "Element" ? segment.Type : "DataObject",
@@ -1094,6 +1279,9 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const logger_1 = __webpack_require__(/*! ../../core/logger */ "./client/core/logger.ts");
 const FluxDirectives_1 = __webpack_require__(/*! ./FluxDirectives */ "./client/cms-live-updates/directives/FluxDirectives.ts");
+const FluxFormSchema_1 = __webpack_require__(/*! ./FluxFormSchema */ "./client/cms-live-updates/directives/FluxFormSchema.ts");
+/** Events a schema-bound field can be configured to fire on (fx-event). */
+const DELEGATED_EVENTS = ["click", "change", "keyup"];
 function shouldUpgradeToHtml(previous, next, inlineEditActive) {
   if (inlineEditActive) return false;
   return previous.trim().length === 0 && String(next).trim().length > 0;
@@ -1105,12 +1293,50 @@ class FluxDirectiveManager {
     this.onTriggerUpdate = onTriggerUpdate;
     this.hostChannel = hostChannel;
     this.onPatchUpdate = onPatchUpdate;
+    /**
+     * Last value seen per schema-bound field. These can't be tracked on the
+     * element the way the entwine bindings do — React hands us a new node on
+     * every change — so they're keyed by input name instead.
+     */
+    this.schemaBoundValues = new Map();
   }
   initialize() {
     const manager = this;
     this.$.entwine("flux", function ($) {
       manager.setupKeyBindings($);
     });
+    this.setupSchemaBindings();
+  }
+  /**
+   * Fields whose React component drops the fx-* attributes never match
+   * `[fx-key]`, so the entwine binding above never sees them (Boolean fields
+   * are the common case — an unchecked `<% if $ShowTitle %>` would do
+   * nothing). Their bindings still exist in the form schema, so listen at the
+   * document and look them up by input name.
+   *
+   * Capture phase: a checkbox's `checked` is already flipped by the time the
+   * click event dispatches, and listening early keeps us clear of whatever
+   * React does with the event afterwards.
+   */
+  setupSchemaBindings() {
+    const handler = event => this.handleSchemaBoundEvent(event);
+    for (const eventType of DELEGATED_EVENTS) {
+      document.addEventListener(eventType, handler, true);
+    }
+  }
+  handleSchemaBoundEvent(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const name = target.name;
+    if (!name) return;
+    // Anything carrying its own attributes is the entwine binding's.
+    if (target.closest("[fx-key]")) return;
+    const attributes = (0, FluxFormSchema_1.fluxAttributesForField)(name);
+    if (!attributes) return;
+    const binding = (0, FluxDirectives_1.fromAttributes)(target, attributes);
+    if (!binding || binding.event !== event.type) return;
+    (0, FluxFormSchema_1.reportSchemaFallback)(name, binding.key);
+    this.schemaBoundValues.set(name, this.handleInputChange(event, target, binding, this.schemaBoundValues.get(name) ?? ""));
   }
   setupKeyBindings($) {
     const manager = this;
@@ -1210,7 +1436,7 @@ class FluxDirectiveManager {
     if (!editor) return;
     let previousContent = editor.getContent() ?? "";
     const getChangedContent = () => {
-      const ed = window.tinymce.get(element.id);
+      const ed = window.tinymce?.get(element.id);
       if (!ed?.hasFocus()) return null;
       const content = ed.getContent();
       if (content === previousContent) return null;
@@ -1220,7 +1446,10 @@ class FluxDirectiveManager {
         content
       };
     };
-    const sendTextUpdate = () => {
+    // An editor's value is markup, so it has to be morphed into the bound
+    // element rather than patched as text — a textUpdate would put the
+    // literal "<p>abc</p>" on the page.
+    const sendRichTextUpdate = () => {
       const result = getChangedContent();
       if (!result) return;
       const {
@@ -1228,22 +1457,23 @@ class FluxDirectiveManager {
         content
       } = result;
       // When shortcodes are present, use the editor body's innerHTML instead
-      // — TinyMCE renders shortcodes as real DOM elements that morph smoothly.
-      if (this.containsShortcode(content)) {
-        this.hostChannel.broadcastMessage({
-          type: "richTextUpdate",
-          key: binding.key,
-          owner: binding.owner,
-          value: ed.getBody().innerHTML
-        });
-        return;
-      }
+      // — TinyMCE renders shortcodes as real DOM elements that morph smoothly,
+      // where getContent() would hand us the unrendered shortcode syntax.
+      const value = this.containsShortcode(content) ? ed.getBody().innerHTML : content;
+      // Record the editor's own markup, never the rendered body: the
+      // ChangeSet is replayed through the server on the next template
+      // update, and it has to carry the shortcode source the record
+      // actually stores. Without this the preview shows the typing but
+      // the next full render throws it away for the saved content.
+      this.fluxState.updateField(binding.key, content, {
+        type: "HTML",
+        owner: binding.owner ?? undefined
+      });
       this.hostChannel.broadcastMessage({
-        type: "textUpdate",
+        type: "richTextUpdate",
         key: binding.key,
         owner: binding.owner,
-        event: binding.event,
-        value: content
+        value
       });
     };
     const sendPatchUpdate = () => {
@@ -1265,7 +1495,7 @@ class FluxDirectiveManager {
       this.onPatchUpdate(binding.key, content, binding.owner);
     };
     editor.on("input", () => {
-      sendTextUpdate();
+      sendRichTextUpdate();
     });
     editor.on("Change", e => {
       if (!e.originalEvent || e.originalEvent.type === "execcommand") {
@@ -1316,6 +1546,7 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.fromElement = fromElement;
+exports.fromAttributes = fromAttributes;
 exports.getElementValue = getElementValue;
 exports.parse = parse;
 exports.applyConfig = applyConfig;
@@ -1332,6 +1563,24 @@ function fromElement(el) {
     proxySelector: el.getAttribute('fx-proxy'),
     proxyType: el.getAttribute('fx-proxy-type'),
     collectSelector: el.getAttribute('fx-collect')
+  };
+}
+/**
+ * Same directive, built from an attribute map rather than the element — for
+ * fields whose attributes only exist in the form schema (see FluxFormSchema).
+ */
+function fromAttributes(el, attributes) {
+  const key = attributes['fx-key'];
+  if (!key) return null;
+  return {
+    element: el,
+    key,
+    event: attributes['fx-event'] ?? null,
+    owner: attributes['fx-owner'] ?? null,
+    type: attributes['fx-type'] ?? null,
+    proxySelector: attributes['fx-proxy'] ?? null,
+    proxyType: attributes['fx-proxy-type'] ?? null,
+    collectSelector: attributes['fx-collect'] ?? null
   };
 }
 function getElementValue(el) {
@@ -1369,22 +1618,24 @@ function applyOwnerEditLink(segment) {
 function applySegmentFields(segment, segmentFields) {
   if (!segmentFields) return;
   for (const [, field] of Object.entries(segmentFields)) {
-    const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
-    const selector = parts.join(' ');
-    let element = null;
+    const bindParts = String(field.bind).split(',').map(part => part.trim());
+    const selector = bindParts.map(part => segment.owner ? `${segment.owner} ${part}` : part).join(', ');
+    let elements = null;
     try {
-      element = document.querySelector(selector);
+      elements = document.querySelectorAll(selector);
     } catch {
       logger_1.logger.warn(`Flux: invalid selector for ${field.key}: ${selector} (relation-item fields are stamped via relation config)`);
       continue;
     }
-    if (!element) {
+    if (!elements.length) {
       logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${selector}`);
       continue;
     }
-    element.setAttribute('fx-key', field.key);
-    element.setAttribute('fx-type', field.type);
-    if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+    elements.forEach(element => {
+      element.setAttribute('fx-key', field.key);
+      element.setAttribute('fx-type', field.type);
+      if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+    });
   }
 }
 function applySegmentRelations(_segment, segmentRelationFields) {
@@ -1450,6 +1701,10 @@ function applyRelationAttributes(el, owner, relationName, relationField) {
   el.setAttribute('fx-owner', owner);
   if (!relationField.Fields) return;
   for (const [fieldName, fieldConfig] of Object.entries(relationField.Fields)) {
+    if (!fieldConfig.bind) {
+      logger_1.logger.warn(`Flux: No selector for ${relationName}.${fieldName}`);
+      continue;
+    }
     const childEl = el.querySelector(fieldConfig.bind);
     if (!childEl) {
       logger_1.logger.warn(`Flux: Cannot find element for ${relationName}.${fieldName} with selector: ${fieldConfig.bind}`);
@@ -1459,6 +1714,86 @@ function applyRelationAttributes(el, owner, relationName, relationField) {
     childEl.setAttribute('fx-type', fieldConfig.type);
     childEl.setAttribute('fx-owner', owner);
   }
+}
+
+/***/ }),
+
+/***/ "./client/cms-live-updates/directives/FluxFormSchema.ts":
+/*!**************************************************************!*\
+  !*** ./client/cms-live-updates/directives/FluxFormSchema.ts ***!
+  \**************************************************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+
+Object.defineProperty(exports, "__esModule", ({
+  value: true
+}));
+exports.fluxAttributesForField = fluxAttributesForField;
+exports.reportSchemaFallback = reportSchemaFallback;
+/**
+ * Flux's fx-* attributes are set on the PHP FormField and travel to the client
+ * inside silverstripe/admin's form schema, in each field's `attributes` map.
+ * Whether they reach the DOM is up to the React component that renders the
+ * field: TextField spreads them, but CheckboxField (and anything else that
+ * builds its own <input>) drops them, so those fields never match `[fx-key]`
+ * and never get bound.
+ *
+ * Stamping the attributes back on afterwards does not hold either — React
+ * replaces the input node on every change, taking listeners with it.
+ *
+ * The schema those components were rendered from still carries the bindings,
+ * so we read them from there and bind by delegation instead.
+ */
+const logger_1 = __webpack_require__(/*! ../../core/logger */ "./client/core/logger.ts");
+function formSchemas() {
+  const store = window.ss?.store;
+  if (typeof store?.getState !== 'function') {
+    return null;
+  }
+  return store.getState()?.form?.formSchemas ?? null;
+}
+function findField(fields, name) {
+  for (const field of fields ?? []) {
+    if (field.name === name) {
+      return field;
+    }
+    const child = findField(field.children, name);
+    if (child) {
+      return child;
+    }
+  }
+  return null;
+}
+/**
+ * The fx-* attributes the server set for a form field, by its input name, or
+ * null when the field is not a Flux field (or no React form is on the page).
+ */
+function fluxAttributesForField(name) {
+  const schemas = formSchemas();
+  if (!schemas) {
+    return null;
+  }
+  for (const entry of Object.values(schemas)) {
+    const attributes = findField(entry?.schema?.fields, name)?.attributes;
+    if (attributes?.['fx-key']) {
+      return attributes;
+    }
+  }
+  return null;
+}
+const reported = new Set();
+/**
+ * Say so — once per field — when a binding had to come from the schema. It
+ * means that field's React component dropped the attributes, and every
+ * fx-* consumer that reads the DOM (the preview annotator, inline editing) cannot see it.
+ */
+function reportSchemaFallback(name, key) {
+  if (reported.has(name)) {
+    return;
+  }
+  reported.add(name);
+  logger_1.logger.warn(`Flux: "${key}" (${name}) carries no fx-* attributes in the DOM — its React field dropped them. ` + 'Bound from the form schema instead.');
 }
 
 /***/ }),

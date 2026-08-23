@@ -1,9 +1,6 @@
 /**
- * Public frontend bundle entry point (see webpack.config.js → `frontend`).
- * Loaded on every rendered page via FluxExtension.
- *
- * Boots the htmx-lite fx- directive runtime so consumers can use
- * fx-get / fx-post / fx-trigger / fx-target / fx-swap on any frontend page.
+ * Public frontend bundle entry point (webpack `frontend`), loaded on every rendered page.
+ * Boots the fx- directive runtime.
  */
 
 import { initFxDirectives } from "./FxDirectives";

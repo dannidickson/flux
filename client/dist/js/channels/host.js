@@ -115,14 +115,9 @@ class HostChannel {
     this.sendPortToFrame();
   }
   /**
-   * Proactively establish the channel with a frame that is ALREADY loaded.
-   *
-   * `FRAME_READY` only helps when the frame announces itself after the host's
-   * listener exists. On a direct refresh the parent's `window.load` (which
-   * builds the host) fires AFTER the iframe has loaded and already posted
-   * `FRAME_READY` — so the host misses it and the channel never forms. Calling
-   * this on init covers that case; the `FRAME_READY` listener still covers
-   * frames that (re)load later.
+   * Establish the channel with a frame that is already loaded.
+   * On direct refresh, the parent's window.load fires after iframe load, so
+   * the FRAME_READY message is missed; this call covers that race condition.
    */
   connectExistingFrame() {
     if (!this.frame?.contentWindow) return;

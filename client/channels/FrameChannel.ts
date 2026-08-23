@@ -1,7 +1,8 @@
 import { logger } from "../core/logger";
 
 /**
- * FrameChannel can implement the onReceivedMessage either in the constructor, or via frame.onReceivedMessage
+ * Establish port-based messaging channel with the parent frame.
+ * Message handler can be passed to constructor or set via onReceivedMessage property.
  *
  * @example client/cms-live-updates/frame.ts
  */
@@ -14,10 +15,8 @@ export default class FrameChannel {
         this.messageHandler = (event: MessageEvent) => this.setupMessageEvents(event);
         window.addEventListener("message", this.messageHandler);
 
-        // Set the default handler or use the one passed in
         this.onReceivedMessage = onReceivedMessage || this.defaultMessageHandler.bind(this);
 
-        // Signal to parent that frame is ready (handles both initial load and reloads)
         if (window.parent !== window) {
             logger.log("[channel] frame posting FRAME_READY →", window.location.href);
             window.parent.postMessage({ type: 'FRAME_READY' }, window.location.origin);
@@ -50,7 +49,8 @@ export default class FrameChannel {
     }
 
     /**
-     * Fallback if the FrameChannel implementation doesnt include custom `onReceivedMessage` handler
+     * Fallback used when no custom `onReceivedMessage` handler was supplied.
+     *
      * @param event
      */
     private defaultMessageHandler(event: MessageEvent): void {
