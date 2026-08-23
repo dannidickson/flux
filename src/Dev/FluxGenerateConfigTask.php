@@ -2,11 +2,20 @@
 
 namespace Flux\Dev;
 
-use DOMDocument;
-use DOMElement;
-use DOMText;
-use DOMXPath;
 use Flux\Core\Configuration;
+use Flux\Schema\UpdateMode;
+use Flux\Template\Analysis\ClassResolver;
+use Flux\Template\Analysis\ConfigSchemaInspector;
+use Flux\Template\Analysis\FieldBinding;
+use Flux\Template\Analysis\IncludeResolver;
+use Flux\Template\Analysis\SelectorBuilder;
+use Flux\Template\Analysis\SkipReport;
+use Flux\Template\Analysis\TemplateAnalyzer;
+use Flux\Template\Analysis\ThemeIncludeLocator;
+use Flux\Template\Ast\AstDumper;
+use Flux\Template\Parser\Parser;
+use Flux\Template\Parser\TagHandler;
+use Flux\Template\Parser\TagHandlerRegistry;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Core\Injector\Injector;
@@ -24,36 +33,28 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Gathers the templates and DataObjects to auto-generate configuration as a YAML file.
- * sake flux:generate-config
- *
- * Note this is some old code converted from Go into PHP and improved upon.
+ * Generates flux_fields YAML from the project's templates and DataObjects, via
+ * {@see TemplateAnalyzer}. Runs at /dev/flux-generate-config.
  */
 class FluxGenerateConfigTask extends DevCommand
 {
-    protected static string $commandName = 'flux:generate-config';
+
+    protected static string $commandName = 'flux-generate-config';
 
     protected string $title = 'Generate Flux Field Config';
 
-    protected static string $description = 'Analyses templates and DataObjects to generate flux_fields YAML configuration.';
+    protected static string $description =
+        'Analyses templates and DataObjects to generate flux_fields YAML configuration.';
 
     public function getTitle(): string
     {
         return $this->title;
     }
 
-    protected function getHeading(): string
+    public function getHeading(): string
     {
         return $this->title;
     }
-
-    private const PATTERN_SS_VAR = '/\$(\w+)(?:\([^)]*\))?(?:\.\w+)*/';
-    private const PATTERN_SS_CONTROL = '/<%\s*(if|else_if|end_if|loop|end_loop|with|end_with|require|include)\b[^%]*%>/';
-    private const PATTERN_ATTR_VAR = '/\w+="[^"]*\$\w+[^"]*"/s';
-    private const PATTERN_SS_LOOP = '/<%\s*loop\s+\$(\w+)\s*%>(.*?)<%\s*end_loop\s*%>/s';
-    private const PATTERN_SS_WITH = '/<%\s*with\s+\$(\w+)\s*%>(.*?)<%\s*end_with\s*%>/s';
-    private const PATTERN_DYNAMIC_OPEN_TAG = '/<\$\w+/';
-    private const PATTERN_DYNAMIC_CLOSE_TAG = '/<\/\$\w+>/';
 
     public function getOptions(): array
     {
@@ -71,37 +72,103 @@ class FluxGenerateConfigTask extends DevCommand
                 InputOption::VALUE_NONE,
                 'Print the generated config without writing to disk',
             ),
+            new InputOption(
+                'dump-ast',
+                null,
+                InputOption::VALUE_NONE,
+                'Also write the parsed template AST to a YAML file for inspection',
+            ),
+            new InputOption(
+                'ast-output',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Path for the --dump-ast output',
+                'app/_config/flux-ast.yml',
+            ),
         ];
     }
 
     protected function execute(InputInterface $input, PolyOutput $output): int
     {
-        $config = [];
+        $tags = $this->buildTagRegistry();
+        $analyzer = new TemplateAnalyzer(
+            new ClassResolver(new ConfigSchemaInspector()),
+            new SelectorBuilder(),
+            new IncludeResolver(new ThemeIncludeLocator(), $tags),
+        );
 
-        foreach ($this->getFluxDataObjects() as $className => $templates) {
-            $result = $this->getFluxInfoForClass($className, $templates);
-            if ($result) {
-                $config[$className] = $result;
-            }
+        $dumper = null;
+
+        if ($input->getOption('dump-ast')) {
+            $dumper = new AstDumper();
         }
 
-        if (empty($config)) {
-            $output->writeln('No flux DataObjects with templates found.');
+        $config = [];
+        $reports = [];
+        $astDump = [];
+
+        foreach ($this->getFluxDataObjects() as $className => $templates) {
+            $report = $this->analyseClass($analyzer, $tags, $className, $templates, $dumper);
+
+            if ($report['config'] !== null) {
+                $config[$className] = $report['config'];
+            }
+
+            if ($report['ast'] !== []) {
+                $astDump[$className] = $report['ast'];
+            }
+
+            $reports[$className] = $report;
+        }
+
+        if ($config === []) {
+            $output->writeln('No flux DataObjects with bindable fields found.');
+
             return Command::SUCCESS;
         }
 
         if (!$input->getOption('dry-run')) {
             $outputPath = BASE_PATH . '/' . $input->getOption('output');
             file_put_contents($outputPath, Yaml::dump($config, 6, 2));
-            $output->writeln("Generated: {$outputPath}");
+            $output->writeln('Generated: ' . $outputPath);
             $output->writeln('');
         }
 
-        foreach ($config as $className => $classConfig) {
-            $output->writeln(sprintf('Writing config for %s', $className));
+        if ($dumper !== null && $astDump !== []) {
+            $astPath = BASE_PATH . '/' . $input->getOption('ast-output');
+            file_put_contents($astPath, Yaml::dump($astDump, 99, 2));
+            $output->writeln('AST written: ' . $astPath);
+            $output->writeln('');
         }
 
+        $this->printReport($output, $reports);
+
         return Command::SUCCESS;
+    }
+
+    /**
+     * Builds the tag handler registry from the template_tag_handlers config.
+     */
+    private function buildTagRegistry(): TagHandlerRegistry
+    {
+        $registry = new TagHandlerRegistry();
+        $handlers = Configuration::config()->get('template_tag_handlers') ?? [];
+
+        foreach ($handlers as $keyword => $class) {
+            if (!is_string($class) || !class_exists($class)) {
+                continue;
+            }
+
+            $handler = Injector::inst()->create($class);
+
+            if (!($handler instanceof TagHandler)) {
+                continue;
+            }
+
+            $registry->register((string) $keyword, $handler);
+        }
+
+        return $registry;
     }
 
     private function getFluxDataObjects(): array
@@ -110,14 +177,19 @@ class FluxGenerateConfigTask extends DevCommand
         $excluded = Configuration::config()->get('excluded_classes') ?? [];
 
         foreach (ClassInfo::subclassesFor(DataObject::class, false) as $class) {
-            if (in_array($class, $excluded) || empty(Config::inst()->get($class, 'db'))) {
+            $db = Config::inst()->get($class, 'db');
+
+            if (in_array($class, $excluded) || $db === null || $db === []) {
                 continue;
             }
 
             $templates = $this->findTemplatesForClass($class);
-            if (!empty($templates)) {
-                $classes[$class] = $templates;
+
+            if ($templates === []) {
+                continue;
             }
+
+            $classes[$class] = $templates;
         }
 
         return $classes;
@@ -131,11 +203,13 @@ class FluxGenerateConfigTask extends DevCommand
         $found = [];
 
         foreach ($candidates as $candidate) {
-            $templateList = is_array($candidate)
-                ? (array_key_exists('templates', $candidate) ? $candidate['templates'] : $candidate)
-                : [$candidate];
+            $templateList = [$candidate];
+            $type = '';
 
-            $type = is_array($candidate) ? ($candidate['type'] ?? '') : '';
+            if (is_array($candidate)) {
+                $templateList = $candidate['templates'] ?? $candidate;
+                $type = $candidate['type'] ?? '';
+            }
 
             foreach ($templateList as $template) {
                 if (is_array($template)) {
@@ -149,14 +223,18 @@ class FluxGenerateConfigTask extends DevCommand
 
                 foreach ($themePaths as $themePath) {
                     $path = Path::join($baseDir, $themePath, 'templates', $head, $type, $tail) . '.ss';
+
                     if (file_exists($path)) {
                         $found[] = $path;
                     }
 
                     $layoutPath = Path::join($baseDir, $themePath, 'templates', $head, 'Layout', $tail) . '.ss';
-                    if (file_exists($layoutPath)) {
-                        $found[] = $layoutPath;
+
+                    if (!file_exists($layoutPath)) {
+                        continue;
                     }
+
+                    $found[] = $layoutPath;
                 }
             }
         }
@@ -164,305 +242,156 @@ class FluxGenerateConfigTask extends DevCommand
         return array_unique($found);
     }
 
-    private function getFluxInfoForClass(string $className, array $templates): ?array
-    {
+    /**
+     * Analyses every template for a class and assembles the flux_fields config.
+     *
+     * @return array{
+     *     config: ?array,
+     *     fields: array<string, string|array>,
+     *     skips: SkipReport[],
+     *     fieldNames: string[],
+     *     ast: array<string, mixed>
+     * }
+     */
+    private function analyseClass(
+        TemplateAnalyzer $analyzer,
+        TagHandlerRegistry $tags,
+        string $className,
+        array $templates,
+        ?AstDumper $dumper = null,
+    ): array {
         $config = Config::inst();
-
         $db = $config->get($className, 'db') ?? [];
         $hasOne = $config->get($className, 'has_one') ?? [];
-        $hasMany = $config->get($className, 'has_many') ?? [];
-        $manyMany = $config->get($className, 'many_many') ?? [];
-
-        $allFieldNames = array_unique(array_merge(array_keys($db), array_keys($hasOne)));
-        $relations = array_merge($hasMany, $manyMany);
-
-        $allAttributeFields = [];
-        $allFieldResults = [];
-        $allLoopResults = [];
-
-        foreach ($templates as $templatePath) {
-            $templateContent = file_get_contents($templatePath);
-            if (!$templateContent) {
-                continue;
-            }
-
-            $allAttributeFields = array_merge($allAttributeFields, $this->findAttributeFields($templateContent));
-            $allLoopResults = array_merge($allLoopResults, $this->extractLoopBlocks($templateContent, $relations));
-
-            $resolved = $this->resolveIncludes($templateContent);
-            $html = $this->preProcess($this->stripScopedBlocks($resolved));
-            $allFieldResults = array_merge($allFieldResults, $this->parseAndWalk($html, $allFieldNames));
-        }
-
-        $allAttributeFields = array_unique($allAttributeFields);
 
         $fluxFields = [];
-        $skipped = [];
-
-        foreach ($allFieldResults as $fieldName => $result) {
-            if (!array_key_exists($fieldName, $db) && !array_key_exists($fieldName, $hasOne)) {
-                continue;
-            }
-
-            if (in_array($fieldName, $allAttributeFields)) {
-                $skipped[$fieldName] = 'attribute';
-                continue;
-            }
-
-            if (!empty($result['selector'])) {
-                $fluxFields[$fieldName] = $result['selector'];
-            }
-        }
-
-        $fluxFieldTypes = $this->buildFieldTypes($className, $db, $hasOne, $fluxFields);
-        $fluxRelationFields = $this->buildRelationFields($allLoopResults);
-
-        return array_filter([
-            'flux_fields' => $fluxFields ?: null,
-            'flux_fieldtypes' => $fluxFieldTypes ?: null,
-            'flux_relation_fields' => $fluxRelationFields ?: null,
-            '_skipped' => $skipped ?: null,
-        ]) ?: null;
-    }
-
-    private function findAttributeFields(string $template): array
-    {
-        preg_match_all(self::PATTERN_ATTR_VAR, $template, $matches);
-        $fields = [];
-        foreach ($matches[0] as $attr) {
-            preg_match_all('/\$(\w+)/', $attr, $varMatches);
-            array_push($fields, ...$varMatches[1]);
-        }
-        return $fields;
-    }
-
-    // Replaces <% include Name %> tags with the partial content so its variables
-    // are visible in the parent class scope.
-    private function resolveIncludes(string $template): string
-    {
-        return preg_replace_callback(
-            '/<%\s*include\s+(\w+)[^%]*%>/i',
-            fn(array $m) => $this->findIncludeTemplate($m[1]) ?? '',
-            $template,
-        ) ?? $template;
-    }
-
-    private function findIncludeTemplate(string $name): ?string
-    {
-        $themePaths = ThemeResourceLoader::inst()->getThemePaths(SSViewer::get_themes());
-        $baseDir = ThemeResourceLoader::inst()->getBase();
-
-        foreach ($themePaths as $themePath) {
-            $path = Path::join($baseDir, $themePath, 'templates', 'Includes', $name) . '.ss';
-            if (file_exists($path)) {
-                return file_get_contents($path) ?: null;
-            }
-        }
-
-        return null;
-    }
-
-    private function stripScopedBlocks(string $template): string
-    {
-        $result = preg_replace(self::PATTERN_SS_LOOP, '', $template) ?? $template;
-        return preg_replace(self::PATTERN_SS_WITH, '', $result) ?? $result;
-    }
-
-    /**
-     * Converts templates into HTML for parsing
-     * Replace $Variables with placeholders to avoid bad HTML
-     */
-    private function preProcess(string $template): string
-    {
-        $html = preg_replace(self::PATTERN_SS_CONTROL, '', $template);
-        $html = preg_replace(self::PATTERN_DYNAMIC_CLOSE_TAG, '</div>', $html) ?? $html;
-        $html = preg_replace(self::PATTERN_DYNAMIC_OPEN_TAG, '<div', $html) ?? $html;
-
-        $html = preg_replace_callback(
-            self::PATTERN_ATTR_VAR,
-            fn($m) => preg_replace('/\$(\w+)/', '__flux_attr_$1__', $m[0]),
-            $html,
-        );
-
-        return preg_replace(self::PATTERN_SS_VAR, '<flux-field data-name="$1"></flux-field>', $html) ?? $html;
-    }
-
-    /**
-     * Walk the dom to find flux-field placeholders and build selectors for them,
-     * It will only include fields that exist on the DataObject definition
-     */
-    private function parseAndWalk(string $html, array $dbFieldNames): array
-    {
-        $results = [];
-        $doc = $this->loadDom($html);
-        $xpath = new DOMXPath($doc);
-
-        foreach ($xpath->query('//flux-field') as $placeholder) {
-            $fieldName = $placeholder->getAttribute('data-name');
-
-            if (!in_array($fieldName, $dbFieldNames)) {
-                continue;
-            }
-
-            $parent = $placeholder->parentNode;
-            if (!$parent || !($parent instanceof DOMElement)) {
-                continue;
-            }
-
-            if (!$this->isEffectivelySoleContent($parent)) {
-                continue;
-            }
-
-            $selector = $this->buildSelector($parent);
-            if ($selector) {
-                $results[$fieldName] = ['selector' => $selector];
-            }
-        }
-
-        return $results;
-    }
-
-    /**
-     * Checks if placeholder has any siblings to avoid giving selectors for fields
-     * like <div class="page__content>$Image $Content</div> the same class
-     * As it shouldnt
-     */
-    private function isEffectivelySoleContent(DOMElement $parent): bool
-    {
-        $meaningful = 0;
-
-        foreach ($parent->childNodes as $child) {
-            if ($child instanceof DOMText && trim($child->textContent) === '') {
-                continue;
-            }
-            $meaningful++;
-        }
-
-        return $meaningful === 1;
-    }
-
-    /**
-     * Builds a CSS selector for the given element,
-     * preferring classes but falling back to tag name if no suitable classes are found
-     */
-    private function buildSelector(DOMElement $element): ?string
-    {
-        if ($element->hasAttribute('class')) {
-            $classes = array_filter(
-                preg_split('/\s+/', trim($element->getAttribute('class'))),
-                fn ($c) => !str_contains($c, '__flux_attr_'),
-            );
-
-            if (!empty($classes)) {
-                return '.' . implode('.', $classes);
-            }
-        }
-
-        return $element->tagName;
-    }
-
-    /**
-     * Loop through loops and get the flux relation fields
-     * At the moment its only 1 level deep
-     */
-    private function extractLoopBlocks(string $template, array $relations): array
-    {
-        $results = [];
-
-        if (!preg_match_all(self::PATTERN_SS_LOOP, $template, $matches, PREG_SET_ORDER)) {
-            return $results;
-        }
-
-        $relationNames = array_keys($relations);
-
-        foreach ($matches as $match) {
-            $loopName = $match[1];
-            $loopContent = $match[2];
-
-            if (!in_array($loopName, $relationNames)) {
-                continue;
-            }
-
-            $relatedClass = $this->resolveRelationClass($relations[$loopName]);
-            if (!$relatedClass) {
-                continue;
-            }
-
-            $relatedDb = Config::inst()->get($relatedClass, 'db') ?? [];
-            $html = $this->preProcess($loopContent);
-            $fieldResults = $this->parseAndWalk($html, array_keys($relatedDb));
-            $itemSelector = $this->findLoopItemSelector($html);
-
-            if (!$itemSelector) {
-                continue;
-            }
-
-            $fields = [];
-            foreach ($fieldResults as $fieldName => $result) {
-                if (!empty($result['selector'])) {
-                    $fields[$fieldName] = $result['selector'];
-                }
-            }
-
-            $results[$loopName] = ['itemSelector' => $itemSelector, 'fields' => $fields];
-        }
-
-        return $results;
-    }
-
-    /**
-     * Find a selector for the loop item by looking for the first non-placeholder element in the loop block
-     */
-    private function findLoopItemSelector(string $html): ?string
-    {
-        $body = $this->loadDom($html)->getElementsByTagName('body')->item(0);
-
-        if (!$body) {
-            return null;
-        }
-
-        foreach ($body->childNodes as $child) {
-            if ($child instanceof DOMText && trim($child->textContent) === '') {
-                continue;
-            }
-            if ($child instanceof DOMElement) {
-                return $this->buildSelector($child);
-            }
-        }
-
-        return null;
-    }
-
-    private function buildRelationFields(array $loopResults): array
-    {
         $relationFields = [];
+        $skips = [];
+        $ast = [];
 
-        foreach ($loopResults as $relationName => $data) {
-            $entry = ['DOMSelector' => $data['itemSelector']];
-            if (!empty($data['fields'])) {
-                $entry['Fields'] = $data['fields'];
+        foreach ($templates as $templatePath) {
+            $content = file_get_contents($templatePath);
+
+            if (!$content) {
+                continue;
             }
-            $relationFields[$relationName] = $entry;
+
+            $tree = Parser::parse($content, $tags);
+
+            if ($dumper !== null) {
+                $ast[$templatePath] = $dumper->dump($tree);
+            }
+
+            $result = $analyzer->analyze($tree, $className);
+
+            foreach ($result->bindings as $binding) {
+                if ($binding->scope !== FieldBinding::SCOPE_PAGE) {
+                    continue;
+                }
+
+                $this->mergeBinding($fluxFields, $binding);
+            }
+
+            foreach ($result->relationsByName() as $name => $relation) {
+                if ($relation->itemSelector === null) {
+                    continue;
+                }
+
+                $entry = ['DOMSelector' => $relation->itemSelector];
+                $fields = [];
+
+                foreach ($relation->fields as $fieldBinding) {
+                    $this->mergeBinding($fields, $fieldBinding);
+                }
+
+                if ($fields !== []) {
+                    $entry['Fields'] = array_map($this->formatFieldEntry(...), $fields);
+                }
+
+                $relationFields[$name] = $entry;
+            }
+
+            array_push($skips, ...$result->skips);
         }
 
-        return $relationFields;
+        $fluxFields = array_map($this->formatFieldEntry(...), $fluxFields);
+        $fluxFieldTypes = $this->buildFieldTypes($className, $db, $hasOne, $fluxFields);
+
+        // drop the empty sections, as they wont have any fields.
+        $configOut = array_filter([
+            'flux_fields' => $fluxFields,
+            'flux_fieldtypes' => $fluxFieldTypes,
+            'flux_relation_fields' => $relationFields,
+        ]);
+
+        if ($configOut === []) {
+            $configOut = null;
+        }
+
+        return [
+            'config' => $configOut,
+            'fields' => $fluxFields,
+            'skips' => $this->dedupeSkips($skips),
+            'fieldNames' => array_merge(array_keys($db), array_keys($hasOne)),
+            'ast' => $ast,
+        ];
     }
 
-    private function resolveRelationClass(mixed $relation): ?string
+    /**
+     * One field can be bound several times, so selectors union and the strongest update mode
+     * wins. A binding with no selector of its own only gates an `<% if %>`.
+     *
+     * @param array<string, array{selectors: string[], mode: string, isConditional: bool}> $fields by ref
+     */
+    private function mergeBinding(array &$fields, FieldBinding $binding): void
     {
-        if (is_array($relation)) {
-            $relation = $relation['through'] ?? null;
+        $entry = $fields[$binding->field] ?? ['selectors' => [], 'mode' => UpdateMode::TEXT, 'isConditional' => false];
+
+        foreach (explode(', ', $binding->selector) as $selector) {
+            if ($selector === '' || in_array($selector, $entry['selectors'], true)) {
+                continue;
+            }
+
+            $entry['selectors'][] = $selector;
         }
 
-        if (!is_string($relation)) {
-            return null;
+        if ($binding->updateMode !== UpdateMode::TEXT) {
+            $entry['mode'] = $binding->updateMode;
         }
 
-        if (str_contains($relation, '.')) {
-            $relation = explode('.', $relation)[0];
+        if ($binding->isConditional) {
+            $entry['isConditional'] = true;
         }
 
-        return class_exists($relation) ? $relation : null;
+        $fields[$binding->field] = $entry;
+    }
+
+    /**
+     * Emits the short form (a bare selector string) for the common case, and only falls back
+     * to the verbose map when the entry carries more than a default text update.
+     *
+     * @param array{selectors: string[], mode: string, isConditional: bool} $entry
+     * @return string|array{DOMSelector?: string, IsConditional?: true, UpdateMode: string}
+     */
+    private function formatFieldEntry(array $entry): string|array
+    {
+        if ($entry['mode'] === UpdateMode::TEXT && !$entry['isConditional']) {
+            return implode(', ', $entry['selectors']);
+        }
+
+        $map = [];
+
+        if (!$entry['selectors']) {
+            $map['DOMSelector'] = implode(', ', $entry['selectors']);
+        }
+
+        if ($entry['isConditional']) {
+            $map['IsConditional'] = true;
+        }
+
+        $map['UpdateMode'] = $entry['mode'];
+
+        return $map;
     }
 
     private function buildFieldTypes(string $className, array $db, array $hasOne, array $detectedFields): array
@@ -478,14 +407,18 @@ class FluxGenerateConfigTask extends DevCommand
             $cmsFields ??= singleton($className)->getCMSFields();
 
             $field = $cmsFields->dataFieldByName($name) ?? $cmsFields->dataFieldByName($name . 'ID');
+
             if (!$field) {
                 continue;
             }
 
             $schemaType = $this->getSchemaTypeForFormField($field);
-            if ($schemaType) {
-                $fieldTypes[$name] = $schemaType;
+
+            if (!$schemaType) {
+                continue;
             }
+
+            $fieldTypes[$name] = $schemaType;
         }
 
         foreach ($db as $name => $type) {
@@ -494,9 +427,12 @@ class FluxGenerateConfigTask extends DevCommand
             }
 
             $schemaType = $this->getSchemaTypeForFormField(Injector::inst()->create(DropdownField::class, '_'));
-            if ($schemaType) {
-                $fieldTypes[$name] = $schemaType;
+
+            if (!$schemaType) {
+                continue;
             }
+
+            $fieldTypes[$name] = $schemaType;
         }
 
         return $fieldTypes;
@@ -506,17 +442,113 @@ class FluxGenerateConfigTask extends DevCommand
     {
         $schemaDataType = $field->getSchemaDataType();
 
-        return $schemaDataType === FormField::SCHEMA_DATA_TYPE_CUSTOM
-            ? $field->getSchemaComponent()
-            : $schemaDataType;
+        if ($schemaDataType === FormField::SCHEMA_DATA_TYPE_CUSTOM) {
+            return $field->getSchemaComponent();
+        }
+
+        return $schemaDataType;
     }
 
-    private function loadDom(string $html): DOMDocument
+    /**
+     * Collapses repeated skips (same field + reason) to one each.
+     *
+     * @param SkipReport[] $skips
+     * @return SkipReport[]
+     */
+    private function dedupeSkips(array $skips): array
     {
-        $doc = new DOMDocument();
-        libxml_use_internal_errors(true);
-        $doc->loadHTML('<body>' . $html . '</body>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
-        libxml_clear_errors();
-        return $doc;
+        $seen = [];
+        $deduped = [];
+
+        foreach ($skips as $skip) {
+            $key = $skip->field . '|' . $skip->reason;
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $deduped[] = $skip;
+        }
+
+        return $deduped;
     }
+
+    /**
+     * Only skips the developer can act on are printed in full; expected noise (template vars
+     * that aren't fields) is tallied instead, so nothing is swallowed silently.
+     *
+     * @param array<string, array{
+     *     config: ?array,
+     *     fields: array<string, string|array>,
+     *     skips: SkipReport[],
+     *     fieldNames: string[]
+     * }> $reports
+     */
+    private function printReport(PolyOutput $output, array $reports): void
+    {
+        foreach ($reports as $className => $report) {
+            $actionable = array_filter(
+                $report['skips'],
+                function (SkipReport $s) use ($report) {
+                    return $this->isActionableSkip($s, $report['fieldNames']);
+                },
+            );
+
+            if (!$report['fields'] && !$actionable) {
+                continue;
+            }
+
+            $output->writeln($className);
+
+            foreach ($report['fields'] as $field => $entry) {
+                $display = $entry;
+
+                if (is_array($entry)) {
+                    $display = sprintf('%s [%s]', $entry['DOMSelector'] ?? 'condition', $entry['UpdateMode']);
+                }
+
+                $output->writeln(sprintf('  %s → %s', str_pad($field, 22), $display));
+            }
+
+            foreach ($actionable as $skip) {
+                $detail = '';
+
+                if ($skip->detail !== '') {
+                    $detail = sprintf(' (%s)', $skip->detail);
+                }
+
+                $output->writeln(sprintf('  %s ✗ skipped: %s%s', str_pad($skip->field, 22), $skip->reason, $detail));
+            }
+
+            $ignored = count($report['skips']) - count($actionable);
+
+            if ($ignored > 0) {
+                $output->writeln(
+                    sprintf('  (%d other reference(s) ignored: non-fields or unresolved scopes)', $ignored)
+                );
+            }
+
+            $output->writeln('');
+        }
+    }
+
+    /**
+     * Report any fields that likely could be mapped
+     * Skip no include or Variables on their own
+     *
+     * @param string[] $fieldNames
+     */
+    private function isActionableSkip(SkipReport $skip, array $fieldNames): bool
+    {
+        return match ($skip->reason) {
+            SkipReport::NOT_SOLE_CONTENT => true,
+            SkipReport::INCLUDE_NOT_FOUND => true,
+            // Only ever raised for names already confirmed as fields/relations.
+            SkipReport::NO_UNIQUE_SELECTOR => true,
+            SkipReport::ATTRIBUTE => in_array($skip->field, $fieldNames, true),
+            default => false,
+        };
+    }
+
 }
