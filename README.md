@@ -1,12 +1,9 @@
 # Flux - Live updates for Silverstripe CMS
 
-
-> [!WARNING]
-> This is very much a conceptual module, use at own risk.
-> Documentation may be nonsensical or just frankly does not exist at the moment
-
 ## About
-Adds live updates to the Silverstripe CMS, with minimal configuration required to add text updates. With some ideas around a "livewire" like experience.
+> Type in a CMS field and the preview updates as you go.
+
+Adds a "live update" experience to Silverstripe CMS, with minimal configuration required to get started. 
 
 ## Getting started
 Add this github repo to your composer repositories array
@@ -19,15 +16,28 @@ Require the module
 ```shell
 composer require dannidickson/flux
 ```
-In your project add the following extension
+
+**Note** Out of the box, Flux applies some extensions:
+- `Flux\Extension\FluxExtension` on `PageController`, which is the preview/front end side
+- `Flux\Extension\FluxLeftAndMainExtension` on `LeftAndMain`, which is the CMS side
+- `Flux\Extension\FluxDataObjectExtension` to the `DataObject`, which applies the `fx-` attributes on your form fields
+
+To opt out of the `PageController` extension, null it in your own config:
 ```yaml
-# in config/extensions.yaml 
+# in app/_config/extensions.yml
+---
+Name: myproject-disable-flux-page-extension
+After: '#flux-page-extension'
+---
 PageController:
   extensions:
-    - Flux\Extension\FluxExtension
+    FluxExtension: null
 ```
 
-In your project, on a Page object you can add the `flux_fields`, like this example here
+## Telling Flux about your fields
+Next you need to define the a `flux_fields` which will map a DOM element to each Field on a Page, Elemental block, or DataObject.
+
+You can write it by hand on a Page object, like this example here
 ```php
 private static $db = [
     "DisplayNotice" => "Boolean",
@@ -41,63 +51,69 @@ private static $has_one = [
 private static array $flux_fields = [
     'Title' => '.page__title', // a class on the Page template (any querySelector path is valid)
     'Content' => '.page__html',
-    'DisplayNotice' => '.display-notice', // Matches the HasOne key and triggers a template update fetch when you check the checkbox
+    'DisplayNotice' => '.display-notice', // Boolean, triggers a template update fetch when you check the checkbox
     'DisplayImage' => '.page__image', // File HasOne
     'Product' => '.page__product', // HasOne
 ];
 ```
 
-Then in your getCMSFields call, you can add the `applyFluxAttributes` to add attributes to the form fields.
-```php
-public function getCMSFields()
-{
-    $fields = parent::getCMSFields();
-    // add fields etc
+Or you can let Flux write it for you. There is a dev command that will reads your templates, and tries to map each field to a dom element into a YAML file:
 
-    $this->applyFluxAttributes($fields);
-    return $fields;
-}
+```shell
+sake flux-generate-config
 ```
 
+It writes `app/_config/flux-fields.yml` and prints what it mapped and what it had to skip. Run it again whenever you add a field or change a template, then flush with `?flush=1`. The command is only works in dev mode (SS_ENVIRONMENT_TYPE="dev").
+
+This can also be run in the browser at `/dev/flux-generate-config`.
+
 ## Goals of Flux
-Flux's implementation is designed as a light wrapper on your form fields but not deeply coupled, to FormFields or react components. Without requiring you to make significant changes to how your project works. You can read more abut how Flux works here. It will apply `fx-` attributes to your FormFields as well as its DOM elements.
+Flux's implementation is designed as a light wrapper on your form fields but not deeply coupled, to FormFields or react components. Without requiring you to make significant changes to how your project works. You can read more about how Flux works in [how it works](docs/en/how-it-works.md). It will apply `fx-` attributes to your FormFields as well as its DOM elements.
 
 ## Supported Fields
-Most of the core (including Supported modules) Silverstripe form fields are supported, with some cavets. 
+Most of the core (including Supported modules) Silverstripe form fields are supported, with some cavets.
 
 > [!IMPORTANT]
 > **Formatting** and **Validation** do not apply during the live updates. For example an `EmailField` value is not valid it will not validate as you type. This also applies to `DateField`, `Currency`
 
 - CheckboxField
+- CheckboxSetField
 - TextareaField
 - TextField
   - DateField
   - EmailField
   - CurrencyField
-- HtmlEditorField - Refer to known issues
+- DropdownField and other single select fields
+- OptionsetField
+- HTMLEditorField
 - UploadField
+- LinkField 
 
-**TODO**:
-- DropdownField
+## Developing Flux
 
-**Not supported**
-- PasswordField: Will throw an error if you try to do this.
+```shell
+nvm use # Node 18
+yarn install
+yarn watch
+```
 
-## How this all works
-> [!WARNING]
-> DRAFT Content and will not be correct
-- During load form creation it adds `fx-key`, `fx-event` and so forth to FormFields
-- Adding all of these into the `FluxConfigService` which builds out a map of the active page and any elemental blocks you have
-- When `onAfterInit` on the LeftAndMain it will send the FluxConfig to javascript as a `window.FluxConfig` 
+Other Javascript scripts:
 
-**Front end**
-Note this will only apply if you're in the CMS and the frame has the CMSPreview variable
-- Goes through the `FluxConfig` and creates the `FluxLiveState`
-- This will add a `fx-object-ref` to each of the mapped fields via the `flux_fields` array. EG: `'Title' => '.page__title'` will add the following to the DOM `<h2 class="page__title" fx-object-id="1">` and within the FluxLiveState
+```shell
+yarn dev # one off development build
+yarn build # lint, test, then a clean production build
+yarn test # jest
+yarn lint # eslint
+```
 
-## Known issues
-### LinkField support
-Currently there is no default support for linkfield
+PHP scripts:
 
-### HTMLEditorField support
-At the moment HTMLEditorField will send the content via a `textUpdate` which is just for text updates (read more in the how it works section). In a future update I plan to check if the content contains a shortcode `[image src="..."]`, if it does, it will send a `shortCodesFragmentPatch` event that will fire an API request and return the HTML and patch it. This will be debounced like the `pageTemplateUpdate` event. When it doesnt include shortcodes it will just be sent as a `textUpdate`
+```shell
+vendor/bin/phpunit
+vendor/bin/phpcs
+vendor/bin/phpstan analyse
+```
+
+## Documentation
+- [How to use Flux](docs/en/how-to.md): A general how to guide. Written mostly order of implementation
+<!-- - [How it works](docs/en/how-it-works.md): How the internals work -->
