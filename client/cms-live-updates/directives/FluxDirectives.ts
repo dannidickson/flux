@@ -35,6 +35,29 @@ export function fromElement(el: HTMLElement): FluxDirective | null {
     };
 }
 
+/**
+ * Same directive, built from an attribute map rather than the element — for
+ * fields whose attributes only exist in the form schema (see FluxFormSchema).
+ */
+export function fromAttributes(
+    el: HTMLElement,
+    attributes: Record<string, string>,
+): FluxDirective | null {
+    const key = attributes['fx-key'];
+    if (!key) return null;
+
+    return {
+        element: el,
+        key,
+        event: attributes['fx-event'] ?? null,
+        owner: attributes['fx-owner'] ?? null,
+        type: (attributes['fx-type'] as FluxFieldType) ?? null,
+        proxySelector: attributes['fx-proxy'] ?? null,
+        proxyType: (attributes['fx-proxy-type'] as FluxProxyType) ?? null,
+        collectSelector: attributes['fx-collect'] ?? null,
+    };
+}
+
 export function getElementValue(el: HTMLElement): string {
     return (el as any).value ?? el.getAttribute('value') ?? '';
 }
@@ -78,25 +101,29 @@ function applySegmentFields(
     if (!segmentFields) return;
 
     for (const [, field] of Object.entries(segmentFields)) {
-        const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
-        const selector = parts.join(' ');
+        const bindParts = String(field.bind).split(',').map((part: string) => part.trim());
+        const selector = bindParts
+            .map((part: string) => (segment.owner ? `${segment.owner} ${part}` : part))
+            .join(', ');
 
-        let element: Element | null = null;
+        let elements: NodeListOf<Element> | null = null;
         try {
-            element = document.querySelector(selector);
+            elements = document.querySelectorAll(selector);
         } catch {
             logger.warn(`Flux: invalid selector for ${field.key}: ${selector} (relation-item fields are stamped via relation config)`);
             continue;
         }
 
-        if (!element) {
+        if (!elements.length) {
             logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${selector}`);
             continue;
         }
 
-        element.setAttribute('fx-key', field.key);
-        element.setAttribute('fx-type', field.type);
-        if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+        elements.forEach((element) => {
+            element.setAttribute('fx-key', field.key);
+            element.setAttribute('fx-type', field.type);
+            if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+        });
     }
 }
 
@@ -183,6 +210,10 @@ function applyRelationAttributes(
     if (!relationField.Fields) return;
 
     for (const [fieldName, fieldConfig] of Object.entries(relationField.Fields)) {
+        if (!fieldConfig.bind) {
+            logger.warn(`Flux: No selector for ${relationName}.${fieldName}`);
+            continue;
+        }
         const childEl = el.querySelector<HTMLElement>(fieldConfig.bind);
         if (!childEl) {
             logger.warn(`Flux: Cannot find element for ${relationName}.${fieldName} with selector: ${fieldConfig.bind}`);

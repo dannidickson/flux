@@ -5,16 +5,16 @@ namespace Flux\Service;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\ORM\DB;
 use SilverStripe\Versioned\Versioned;
+use Throwable;
 
 /**
- * Writes a batch of FluxLiveState chunks to the DB in a single transaction.
- *
- * Chunks are processed inside-out (DataObject → Element → Page) so the
- * Page render at the end sees fresh child state.
+ * Writes a batch of FluxLiveState chunks in one transaction, inside-out
+ * (DataObject → Element → Page) so the final Page render sees fresh child state.
  */
 class FluxChunkedSaver
 {
-    private const ORDER = [
+
+    private const array ORDER = [
         'DataObject' => 0,
         'Element' => 1,
         'Page' => 2,
@@ -38,6 +38,7 @@ class FluxChunkedSaver
             try {
                 foreach ($ordered as $chunk) {
                     $result = $this->writeChunk($chunk);
+
                     if (isset($result['error'])) {
                         $errors[] = $result;
                     } else {
@@ -45,15 +46,18 @@ class FluxChunkedSaver
                     }
                 }
 
-                if (!empty($errors)) {
+                if (!$errors) {
                     DB::get_conn()->transactionRollback();
+
                     return ['ok' => false, 'saved' => [], 'errors' => $errors];
                 }
 
                 DB::get_conn()->transactionEnd();
+
                 return ['ok' => true, 'saved' => $saved, 'errors' => []];
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 DB::get_conn()->transactionRollback();
+
                 return [
                     'ok' => false,
                     'saved' => [],
@@ -69,8 +73,10 @@ class FluxChunkedSaver
         usort($sorted, function (array $a, array $b) {
             $oa = self::ORDER[$a['kind'] ?? ''] ?? 99;
             $ob = self::ORDER[$b['kind'] ?? ''] ?? 99;
+
             return $oa <=> $ob;
         });
+
         return $sorted;
     }
 
@@ -78,7 +84,7 @@ class FluxChunkedSaver
     {
         $kind = $chunk['kind'] ?? null;
         $class = $chunk['class'] ?? null;
-        $id = isset($chunk['id']) ? (int) $chunk['id'] : 0;
+        $id = (int) ($chunk['id'] ?? 0);
         $fields = $chunk['fields'] ?? [];
 
         $base = ['kind' => $kind, 'class' => $class, 'id' => $id];
@@ -92,6 +98,7 @@ class FluxChunkedSaver
         }
 
         $record = DataObject::get_by_id($class, $id);
+
         if (!$record || !$record->exists()) {
             return $base + ['error' => 'record not found'];
         }
@@ -104,15 +111,22 @@ class FluxChunkedSaver
             if (!$record->hasField($name)) {
                 continue;
             }
+
             $record->$name = $this->normalise($value);
         }
 
         $record->write();
+
         return $base;
     }
 
     private function normalise(mixed $value): mixed
     {
-        return is_array($value) ? implode(',', $value) : $value;
+        if (is_array($value)) {
+            return implode(',', $value);
+        }
+
+        return $value;
     }
+
 }

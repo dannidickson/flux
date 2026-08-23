@@ -13,13 +13,15 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node"
+    "moduleResolution": "node",
+    "jsx": "react-jsx"
   },
   "include": [
     "client/**/*"
   ],
   "exclude": [
     "node_modules",
-    "dist"
+    "dist",
+    "client/preview-old"
   ]
 }

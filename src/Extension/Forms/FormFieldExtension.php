@@ -3,43 +3,40 @@
 namespace Flux\Extension\Forms;
 
 use SilverStripe\Core\Extension;
-use SilverStripe\Dev\Debug;
-use SilverStripe\Forms\FormField;
 
 /**
- * Extension for FormField
- * Provides base implementation for flux attributes
- * Specific field types should override applyFluxAttributes to define their own attributes
+ * Base flux attributes for every FormField. Field-type extensions override
+ * applyFluxAttributes() to add their own.
  */
 class FormFieldExtension extends Extension
 {
+
     /**
-     * Apply flux-specific attributes to this field
-     * FormFields require have a key, bind-to (DOM target) and type
-     *
-     * Override this method in specific field extensions to set field-specific attributes
+     * Every FormField needs a key, a bind target (DOM selector) and a type.
      */
     public function applyFluxAttributes(string $key, string $value, ?string $fluxType): void
     {
-        $this->getOwner()->setAttribute("fx-key", $key);
-        $this->getOwner()->setAttribute("fx-bind", $value);
-        $this->getOwner()->setAttribute("fx-type", $fluxType);
-
-        // if ($fluxType) {
-        //     $this->getOwner()->setAttribute("fx-event", 'keyup');
-        // }
+        $this->getOwner()->setAttribute('fx-key', $key);
+        $this->getOwner()->setAttribute('fx-bind', $value);
+        $this->getOwner()->setAttribute('fx-type', $fluxType);
     }
 
     /**
-     * Apply owner target attribute if available
+     * For a relation (has_one, has_many) it requires an owner id (target)
      */
-    public function applyFluxOwnerAttribute($owner): void
+    public function applyFluxOwnerAttribute(?object $owner): void
     {
-        if ($owner && method_exists($owner, 'getOwnerTarget')) {
-            $ownerTarget = $owner->getOwnerTarget();
-            if ($ownerTarget) {
-                $this->getOwner()->setAttribute("fx-owner", $ownerTarget);
-            }
+        if (!$owner || !method_exists($owner, 'getOwnerTarget')) {
+            return;
         }
+
+        $ownerTarget = $owner->getOwnerTarget();
+
+        if (!$ownerTarget) {
+            return;
+        }
+
+        $this->getOwner()->setAttribute('fx-owner', $ownerTarget);
     }
+
 }

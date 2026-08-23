@@ -2,8 +2,7 @@
  * Bridges the v2 `window.FluxBootstrap` payload into the v1 `window.FluxConfig`
  * shape that FluxLiveState / FluxDirectiveManager already consume.
  *
- * Phase 2 keeps existing client modules unchanged. Phase 3 will drop the
- * FluxConfig shape entirely.
+ * @todo need to merge in the various states from config to livestate into a single var
  */
 
 import { logger } from "../core/logger";
@@ -74,14 +73,24 @@ export function adaptContextToFluxConfig(context: FluxContextPayload): FluxConfi
     const previousPage = previous?.Segments?.find((s) => s.Type === "Page");
     const nextPage = context.segments.find((s) => s.Type === "Page");
 
-    let changeSet: Record<string, Record<string, any>> = {};
-    if (
-        previousPage &&
-        nextPage &&
+    const sameRecord =
+        !!previousPage &&
+        !!nextPage &&
         String(previousPage.ID) === String(nextPage.ID) &&
-        previousPage.ClassName === nextPage.ClassName
-    ) {
+        previousPage.ClassName === nextPage.ClassName;
+
+    let changeSet: Record<string, Record<string, any>> = {};
+    if (sameRecord) {
         changeSet = previous?.ChangeSet ?? {};
+    } else if (previous?.ChangeSet && Object.keys(previous.ChangeSet).length > 0) {
+        logger.error(
+            "Discarding pending changes: context switched records",
+            {
+                from: previousPage ? `${previousPage.ClassName}#${previousPage.ID}` : null,
+                to: nextPage ? `${nextPage.ClassName}#${nextPage.ID}` : null,
+                discarded: Object.keys(previous.ChangeSet),
+            },
+        );
     }
 
     return {
@@ -100,11 +109,9 @@ export function applyContext(context: FluxContextPayload): void {
 }
 
 /**
- * Read the most-specific FluxBootstrap script tag in the document. When a
- * nested GridField item is being edited, both the LeftAndMain extension
- * and the GridFieldDetailForm extension push a `<script id="flux-bootstrap-data">`
- * into their respective forms — the inner one is later in DOM order and
- * should win.
+ * Read the most-specific FluxBootstrap script tag in the document.
+ * When nested items are edited, both LeftAndMain and GridFieldDetailForm add a
+ * `<script id="flux-bootstrap-data">` — the inner one (later in DOM order) takes precedence.
  */
 function readBootstrapScriptTag(): FluxBootstrapPayload | null {
     const nodes = document.querySelectorAll<HTMLScriptElement>('script#flux-bootstrap-data');
@@ -149,11 +156,8 @@ export function currentContextHint(): FluxContextHint | null {
 
 /**
  * Host PJAX hook: read the FluxBootstrap from the most-specific
- * #flux-bootstrap-data <script> tag in the swapped form HTML.
- *
- * Standard CMS PJAX requests only fetch the CurrentForm/Content/Breadcrumbs
- * fragments — a custom fragment wouldn't be included — so the bootstrap
- * rides along inside the form HTML instead.
+ * #flux-bootstrap-data <script> tag in the swapped form HTML. Standard CMS PJAX
+ * requests only fetch CurrentForm/Content/Breadcrumbs, so the bootstrap is included inside the form HTML.
  */
 export function applyPjaxBootstrapFromDom(): boolean {
     const payload = readBootstrapScriptTag();
@@ -178,8 +182,8 @@ export async function fetchFluxContext(hint: FluxContextHint): Promise<FluxConfi
 
 /**
  * Fetch the context payload without applying it. Lets callers decide whether
- * to apply — the frame's boot fetch must not clobber a more-specific scope the
- * host may have pushed while the fetch was in flight.
+ * to apply — the frame's boot fetch must not overwrite a more-specific scope the
+ * host may have sent while the fetch was still running.
  */
 export async function fetchContextPayload(hint: FluxContextHint): Promise<FluxContextPayload | null> {
     const params = new URLSearchParams();

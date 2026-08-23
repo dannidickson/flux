@@ -7,6 +7,7 @@
 import { logger } from "../core/logger";
 import type {
     FluxChangeSetPayload,
+    FluxChunkedSavePayload,
     FluxConfigSegment,
     FluxConfigStructure,
 } from "../types/flux.interface";
@@ -38,6 +39,10 @@ class FluxLiveState {
         return this.segments.find((s) => s.Type === "Page")?.ClassName ?? null;
     }
 
+    private segmentKey(segment: FluxConfigSegment): string {
+        return `${segment.Type}:${segment.ClassName}:${segment.ID}`;
+    }
+
     updateField(
         key: string,
         value: unknown,
@@ -47,24 +52,39 @@ class FluxLiveState {
             ? this.segments.find((s) => s.owner === options.owner)
             : this.segments.find((s) => s.Type === "Page");
 
-        const resolvedClassName = segment?.ClassName || "";
         const config = this.getConfig();
 
-        if (config && resolvedClassName) {
-            // PHP sometimes serialises an empty ChangeSet as `[]` — normalise to `{}`.
-            if (Array.isArray(config.ChangeSet)) {
-                config.ChangeSet = {};
-            }
-
-            if (!config.ChangeSet[resolvedClassName]) {
-                config.ChangeSet[resolvedClassName] = {};
-            }
-
-            config.ChangeSet[resolvedClassName][key] = value;
+        if (!segment) {
+            logger.error(
+                `No segment for field "${key}" (owner="${options?.owner ?? "<page>"}") — change not recorded, preview will fall back to saved content. Known owners:`,
+                this.segments.map((s) => s.owner ?? `${s.Type}:${s.ID}`),
+            );
+            return;
         }
 
+        if (!config) {
+            logger.error(
+                `No FluxConfig available — change to "${key}" dropped`,
+            );
+            return;
+        }
+
+        // PHP sometimes serialises an empty ChangeSet as `[]` — normalise to `{}`.
+        if (Array.isArray(config.ChangeSet)) {
+            config.ChangeSet = {};
+        }
+
+        const recordKey = this.segmentKey(segment);
+        if (!config.ChangeSet[recordKey]) {
+            config.ChangeSet[recordKey] = {};
+        }
+
+        config.ChangeSet[recordKey][key] = value;
+
         if (process.env.NODE_ENV === "development") {
-            (window as Window & { FluxLiveState?: FluxLiveState }).FluxLiveState = this;
+            (
+                window as Window & { FluxLiveState?: FluxLiveState }
+            ).FluxLiveState = this;
         }
     }
 
@@ -77,11 +97,43 @@ class FluxLiveState {
         return Object.keys(this.getChangeSet()).length > 0;
     }
 
-    clear(): void {
+    /**
+     * Forget every recorded change. Returns the record keys that were dropped
+     * so callers can report what they threw away.
+     */
+    clear(): string[] {
         const config = this.getConfig();
-        if (config) {
-            config.ChangeSet = {};
+        if (!config) {
+            return [];
         }
+
+        const dropped = Object.keys(config.ChangeSet ?? {});
+        config.ChangeSet = {};
+        return dropped;
+    }
+
+    /**
+     * Clear the record by type
+     * EG: 'Element',
+     *
+     * Returns the record keys that were cleared.
+     */
+    clearRecord(type: string, id: string | number): string[] {
+        const config = this.getConfig();
+        if (config === null || !config.ChangeSet) {
+            return [];
+        }
+
+        const clearedKeys = Object.keys(config.ChangeSet)
+        .filter(key => {
+            return key.startsWith(`${type}:`) && key.endsWith(`:${id}`)
+        });
+
+        for (const recordKey of clearedKeys) {
+            delete config.ChangeSet[recordKey];
+        }
+
+        return clearedKeys;
     }
 
     /**
@@ -92,12 +144,19 @@ class FluxLiveState {
     getChangeSetPayload(): Record<string, unknown> {
         const rawChangeSet = this.getChangeSet();
         const payload: Record<string, unknown> = {};
+        const consumed = new Set<string>();
 
         for (const segment of this.segments) {
-            const fields = rawChangeSet[segment.ClassName];
+            const recordKey = this.segmentKey(segment);
+            const fields = rawChangeSet[recordKey];
             if (!fields || Object.keys(fields).length === 0) continue;
 
-            const entry = { ClassName: segment.ClassName, ID: segment.ID, fields };
+            consumed.add(recordKey);
+            const entry = {
+                ClassName: segment.ClassName,
+                ID: segment.ID,
+                fields,
+            };
 
             if (segment.Type === "Page") {
                 payload["Page"] = entry;
@@ -107,6 +166,18 @@ class FluxLiveState {
                 }
                 (payload[segment.Type] as unknown[]).push(entry);
             }
+        }
+
+        const orphaned = Object.keys(rawChangeSet).filter(
+            (recordKey) =>
+                !consumed.has(recordKey) &&
+                Object.keys(rawChangeSet[recordKey] ?? {}).length > 0,
+        );
+        if (orphaned.length) {
+            logger.error(
+                "Pending changes have no matching segment in the current context and will not be sent:",
+                orphaned,
+            );
         }
 
         return payload;
@@ -135,7 +206,7 @@ class FluxLiveState {
             throw new Error(`No segment found for owner: ${owner}`);
         }
 
-        const fields = this.getChangeSet()[segment.ClassName];
+        const fields = this.getChangeSet()[this.segmentKey(segment)];
         if (!fields || Object.keys(fields).length === 0) {
             throw new Error(`No changes found for owner: ${owner}`);
         }
@@ -148,11 +219,13 @@ class FluxLiveState {
             pageID: this.pageID,
             className: this.className,
             changeSet: {
-                [segment.Type]: [{
-                    ClassName: segment.ClassName,
-                    ID: segment.ID,
-                    fields,
-                }],
+                [segment.Type]: [
+                    {
+                        ClassName: segment.ClassName,
+                        ID: segment.ID,
+                        fields,
+                    },
+                ],
             },
         };
     }
@@ -165,19 +238,20 @@ class FluxLiveState {
      * Build a chunked save payload for saving.
      * matches each ClassName to its segment, and emits one chunk per Type, Classname, ID
      */
-    getChunkedSavePayload(): {
-        context: { pageId: number | null; pageClass: string | null };
-        chunks: Array<{ kind: string; class: string; id: number; fields: Record<string, unknown> }>;
-    } {
+    getChunkedSavePayload(): FluxChunkedSavePayload {
         const changeSet = this.getChangeSet();
-        const chunks: Array<{ kind: string; class: string; id: number; fields: Record<string, unknown> }> = [];
+        const chunks: FluxChunkedSavePayload['chunks'] = [];
 
         for (const segment of this.segments) {
-            const fields = changeSet[segment.ClassName];
+            const fields = changeSet[this.segmentKey(segment)];
             if (!fields || Object.keys(fields).length === 0) continue;
 
             chunks.push({
-                kind: segment.Type === "Page" || segment.Type === "Element" ? segment.Type : "DataObject",
+                kind: (
+                    segment.Type === "Page" || segment.Type === "Element"
+                        ? segment.Type
+                        : "DataObject"
+                ) as "Page" | "Element" | "DataObject",
                 class: segment.ClassName,
                 id: Number(segment.ID),
                 fields,

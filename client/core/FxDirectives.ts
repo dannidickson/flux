@@ -1,16 +1,7 @@
 /**
  * htmx-lite directive runtime: fx-get, fx-post, fx-trigger, fx-target, fx-swap.
- *
- * Scope is deliberately small — no SSE, no out-of-band swaps, no extended
- * trigger syntax. A point of unification rather than a feature surface.
- *
- *   <button fx-get="/partial" fx-target="#out" fx-swap="innerHTML">Reload</button>
- *
- * Default trigger:
- *   - <a>, <button>          → click
- *   - <input>, <select>      → change
- *   - <form>                 → submit
- *   - anything else          → load (fires once on init)
+ * Scope is deliberately small — no SSE, no out-of-band swaps, no extended trigger syntax.
+ * Default triggers: click for links/buttons, change for inputs, submit for forms, load for others (once on init).
  */
 
 import { logger } from "./logger";
@@ -44,6 +35,45 @@ function parseSwap(value: string | null): SwapStrategy {
     return "innerHTML";
 }
 
+const VALUED_TAGS = ["INPUT", "SELECT", "TEXTAREA"];
+
+const DEBOUNCED_TRIGGERS = ["input", "keyup", "keydown", "keypress", "search", "change"];
+
+const DEFAULT_DEBOUNCE_MS = 500;
+
+function debounceFor(el: Element, trigger: string): number {
+    const attr = el.getAttribute("fx-debounce");
+
+    if (attr === null) {
+        return DEBOUNCED_TRIGGERS.includes(trigger) ? DEFAULT_DEBOUNCE_MS : 0;
+    }
+
+    const parsed = Number.parseInt(attr, 10);
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        logger.warn(`fx-debounce: "${attr}" is not a positive number, using ${DEFAULT_DEBOUNCE_MS}ms`, el);
+        return DEFAULT_DEBOUNCE_MS;
+    }
+
+    return parsed;
+}
+
+function appendValueParam(el: Element, url: string): string {
+    if (!VALUED_TAGS.includes(el.tagName)) return url;
+
+    const valued = el as HTMLInputElement;
+    const name = el.getAttribute("fx-param") || valued.name || "q";
+
+    try {
+        const target = new URL(url, window.location.href);
+        target.searchParams.set(name, valued.value ?? "");
+        return target.toString();
+    } catch (error) {
+        logger.warn(`fx-get: could not add "${name}" to ${url}:`, error);
+        return url;
+    }
+}
+
 function resolveTarget(el: Element, targetSelector: string | null): Element | null {
     if (!targetSelector || targetSelector === "this") return el;
     return document.querySelector(targetSelector);
@@ -61,7 +91,12 @@ function performSwap(target: Element, html: string, strategy: SwapStrategy): voi
     target.insertAdjacentHTML(strategy, html);
 }
 
-async function fire(el: Element, method: "GET" | "POST", url: string): Promise<void> {
+async function fire(el: Element, method: "GET" | "POST", requestUrl: string): Promise<void> {
+    let url = requestUrl;
+    if (method === "GET") {
+        url = appendValueParam(el, requestUrl);
+    }
+
     const target = resolveTarget(el, el.getAttribute("fx-target"));
     if (!target) {
         logger.warn(`fx-${method.toLowerCase()}: target not found for`, el);
@@ -109,11 +144,21 @@ function bind(el: Element): void {
         return;
     }
 
+    const wait = debounceFor(el, trigger);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
     el.addEventListener(trigger, (event) => {
         if (trigger === "submit" || trigger === "click") {
             event.preventDefault();
         }
-        void fire(el, method, url);
+
+        if (wait === 0) {
+            void fire(el, method, url);
+            return;
+        }
+
+        clearTimeout(timer);
+        timer = setTimeout(() => void fire(el, method, url), wait);
     });
 }
 

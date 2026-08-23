@@ -10,7 +10,7 @@ export interface FluxRelationFieldConfig {
     actions: Array<'edit' | 'delete' | 'archive'>;
     ids: number[];
     idMap?: Record<string, string>;
-    Fields: Record<string, { bind: string; type: string }>;
+    Fields: Record<string, { bind: string | null; type: string; updateMode?: FluxUpdateMode }>;
     dropZone?: string;
     sortable?: boolean;
     sortField?: string;
@@ -25,21 +25,31 @@ export interface GridFieldReorderMessage {
     sortField?: string;
 }
 
+export interface FluxFieldConfig {
+    bind: string | null;
+    type: string;
+    updateMode?: FluxUpdateMode;
+}
+
 export interface FluxConfigStructure {
     Segments: FluxConfigSegment[];
-    Fields: Record<string, Record<string, any>>;
+    Fields: Record<string, Record<string, FluxFieldConfig>>;
     RelationFields: Record<string, Record<string, FluxRelationFieldConfig>>;
-    ChangeSet: Record<string, Record<string, any>>;
-    Events: any[];
+    ChangeSet: Record<string, Record<string, unknown>>;
+    Events: FluxEvent[];
 }
+
+/** How a field's change is applied in the preview; absent means textUpdate. */
+export type FluxUpdateMode = 'textUpdate' | 'templateUpdate' | 'patchUpdate';
 
 export interface FluxFieldBind {
-    bind: string;
+    bind: string | null;
     key: string;
     type: string;
+    updateMode?: FluxUpdateMode;
 }
 
-// ---------- Host → Frame messages ----------
+// Host → Frame messages
 
 export interface ConfigUpdateMessage {
     type: 'configUpdate';
@@ -118,7 +128,7 @@ export type HostToFrameMessage =
     | RichTextUpdateMessage
     | RichTextPatchMessage;
 
-// ---------- Frame → Host messages ----------
+// Frame → Host messages
 
 export interface InlineEditUpdateMessage {
     type: 'inlineEditUpdate';
@@ -203,8 +213,19 @@ export interface FluxChangeSetPayload {
     changeSet: Record<string, unknown>;
 }
 
+export interface FluxElementFragment {
+    html: string;
+    owner: string;
+}
+
 export interface FluxSegmentTemplateChanges {
-    Elements: Record<string, string>;
+    Elements: Record<string, FluxElementFragment>;
+}
+
+/** An element whose region the server couldn't find in the rendered page. */
+export interface FluxSpliceMiss {
+    id: string;
+    tried: string[];
 }
 
 export interface FluxPageUpdateResponse {
@@ -212,6 +233,7 @@ export interface FluxPageUpdateResponse {
     trusted?: boolean;
     changedFields?: Record<string, unknown>;
     segmentTemplateChanges?: FluxSegmentTemplateChanges;
+    spliceMisses?: FluxSpliceMiss[];
 }
 
 export interface FluxBlockUpdateResponse {
@@ -225,8 +247,61 @@ export interface FluxPatchUpdateResponse {
     html: string;
 }
 
+/** Chunked save request: list of records to persist in a single transaction. */
+export interface FluxChunkedSaveChunk {
+    kind: 'DataObject' | 'Element' | 'Page';
+    class: string;
+    id: number;
+    fields: Record<string, unknown>;
+}
+
+export interface FluxChunkedSavePayload {
+    context: { pageId: number | null; pageClass: string | null };
+    chunks: FluxChunkedSaveChunk[];
+}
+
+/** Per-chunk result: what was saved or what error occurred. */
+export interface FluxChunkedSaveChunkResult {
+    kind: 'DataObject' | 'Element' | 'Page' | 'transaction';
+    class?: string;
+    id?: number;
+    error?: string;
+}
+
+export interface FluxChunkedSaveResponse {
+    ok: boolean;
+    saved: FluxChunkedSaveChunkResult[];
+    errors: FluxChunkedSaveChunkResult[];
+}
+
+export interface JQueryResult {
+    on(eventType: string, handler: (this: unknown, event: Event, data?: unknown) => void): JQueryResult;
+    off(eventType?: string): JQueryResult;
+    find(selector: string): JQueryResult;
+    closest(selector: string): JQueryResult;
+}
+
+/** jQuery-like object callable as a selector, carrying the Silverstripe entwine extension. */
+export interface JQueryElement extends JQueryResult {
+    (selector: string | Document): JQueryResult;
+    entwine(namespace: string, callback: (context: JQueryElement) => void): JQueryResult;
+}
+
+/** TinyMCE editor instance. */
+export interface TinyMCEEditor {
+    id: string;
+    getContent(): string;
+    getBody(): HTMLElement;
+    hasFocus(): boolean;
+    on(eventType: string, callback: (e: Event) => void): void;
+    off(eventType: string): void;
+}
+
 declare global {
     interface Window {
         FluxConfig?: FluxConfigStructure;
+        tinymce?: {
+            get(id: string): TinyMCEEditor | undefined;
+        };
     }
 }

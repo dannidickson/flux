@@ -1,6 +1,8 @@
 import type {
     FluxBlockUpdateResponse,
     FluxChangeSetPayload,
+    FluxChunkedSavePayload,
+    FluxChunkedSaveResponse,
     FluxPageUpdateResponse,
     FluxPatchUpdateResponse,
 } from "../types/flux.interface";
@@ -40,12 +42,8 @@ export default class FluxApiClient {
     /**
      * Persist a chunked changeset via /flux/save. Server writes in
      * DataObject → Element → Page order inside a single transaction.
-     * @TODO add a type rather than being lazy
      */
-    async sendChunkedSave(payload: {
-        context: { pageId: number | null; pageClass: string | null };
-        chunks: Array<{ kind: string; class: string; id: number; fields: Record<string, unknown> }>;
-    }): Promise<{ ok: boolean; saved: Array<any>; errors: Array<any> }> {
+    async sendChunkedSave(payload: FluxChunkedSavePayload): Promise<FluxChunkedSaveResponse> {
         const response = await fetch("/flux/save", {
             method: "POST",
             credentials: "same-origin",
@@ -57,6 +55,6 @@ export default class FluxApiClient {
         });
 
         const result = await response.json();
-        return result as { ok: boolean; saved: Array<any>; errors: Array<any> };
+        return result as FluxChunkedSaveResponse;
     }
 }

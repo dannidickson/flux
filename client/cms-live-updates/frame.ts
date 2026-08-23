@@ -12,7 +12,6 @@ import type {
     TextUpdateMessage,
 } from "../types/flux.interface";
 import { applyConfig } from "./directives/FluxDirectives";
-import { initInlineEditing, activeEditingFields } from "../preview/InlineEditor";
 import { applyContext, fetchFluxContext } from "./FluxBootstrap";
 
 declare global {
@@ -21,15 +20,22 @@ declare global {
     }
 }
 
+interface IdimorphOptions {
+    head?: { style?: string };
+    callbacks?: {
+        beforeNodeMorphed?: (oldNode: Element) => boolean;
+    };
+}
+
 declare global {
     interface Window {
         Idiomorph: {
-            morph: (oldNode: Node | HTMLElement, newContent: string | Node, options?: any) => void;
+            morph: (oldNode: Node | HTMLElement, newContent: string | Node, options?: IdimorphOptions) => void;
         };
     }
 }
 
-const beforeNodeMorphed = (oldNode: any) => oldNode.tagName !== 'SCRIPT';
+const beforeNodeMorphed = (oldNode: Element): boolean => oldNode.tagName !== 'SCRIPT';
 
 type KeyedMessage = { key: string; owner: string | null };
 
@@ -37,12 +43,7 @@ function fxSelector(msg: KeyedMessage): string {
     if (msg.owner) {
         return `[fx-owner="${msg.owner}"][fx-key="${msg.key}"]`;
     }
-    return `[fx-key="${msg.key}"]`;
-}
-
-function isActivelyEditing(msg: KeyedMessage): boolean {
-    const editingId = `${msg.key}|${msg.owner ?? ''}`;
-    return activeEditingFields.has(editingId);
+    return `[fx-key="${msg.key}"]:not([fx-owner])`;
 }
 
 const frame = new FrameChannel();
@@ -51,10 +52,6 @@ type HandlerMap = {
     [K in HostToFrameMessage['type']]?: (msg: Extract<HostToFrameMessage, { type: K }>) => void;
 };
 
-function inlineEditorEnabled(): boolean {
-    return window.FluxInlineEditorEnabled === true;
-}
-
 // we re-apply the fx-* directives after morphing the DOM
 function afterMorph(): void {
     if (!window.FluxConfig) {
@@ -62,32 +59,22 @@ function afterMorph(): void {
         return;
     }
     applyConfig(window.FluxConfig);
-    if (inlineEditorEnabled()) initInlineEditing(frame.channel);
 }
 
 /**
- * Find an fx-key element for the message. Warns if missing and
- * skips updates that would clobber a field the user is actively editing.
+ * Find all fx-key elements for the message. Warns if none are found and
+ * skips updates that would overwrite a field the user is actively editing.
  */
-function findFxTarget(msg: KeyedMessage, kind: string): Element | null {
+function findFxTargets(msg: KeyedMessage, kind: string): Element[] {
     const selector = fxSelector(msg);
-    const element = document.querySelector(selector);
+    const elements = Array.from(document.querySelectorAll(selector));
 
-    if (!element) {
-        console.warn(`[findFxDirective] ${kind} DROPPED: no element matched ${selector}`, msg);
-        return null;
+    if (!elements.length) {
+        logger.warn(`[findFxDirective] ${kind} DROPPED: no element matched ${selector}`, msg);
+        return [];
     }
 
-    if (isActivelyEditing(msg)) {
-        console.warn(
-            `[findFxDirective] ${kind} SKIPPED: "${msg.key}|${msg.owner ?? ''}" is in activeEditingFields ` +
-            `(a preview inline-edit focus that never blurred). selector=${selector}`,
-            msg,
-        );
-        return null;
-    }
-
-    return element;
+    return elements;
 }
 
 function handlePageTemplateUpdate(msg: PageTemplateUpdateMessage): void {
@@ -106,7 +93,9 @@ function handlePageTemplateUpdate(msg: PageTemplateUpdateMessage): void {
 function handleBlockUpdate(msg: BlockUpdateMessage): void {
     const ownerElement = document.querySelector(msg.targetOwner);
     if (!ownerElement) {
-        logger.warn(`Block owner element not found: ${msg.targetOwner}`);
+        logger.error(
+            `Block owner element not found: ${msg.targetOwner} — block showing previous content`,
+        );
         return;
     }
 
@@ -126,34 +115,42 @@ function handleBlockUpdate(msg: BlockUpdateMessage): void {
 
 function handlePatchTemplateUpdate(msg: PatchTemplateUpdateMessage): void {
     const selector = fxSelector(msg);
-    const element = document.querySelector(selector);
-    if (!element) {
+    const elements = document.querySelectorAll(selector);
+    if (!elements.length) {
         logger.warn(`[patchTemplateUpdate]: element not found for ${selector}`);
         return;
     }
 
-    element.innerHTML = msg.value;
+    elements.forEach((element) => {
+        element.innerHTML = msg.value;
+    });
+
     logger.log(`[patchTemplateUpdate] Patched element ${selector}`);
 }
 
 function handleRichTextUpdate(msg: RichTextUpdateMessage | RichTextPatchMessage): void {
-    const element = findFxTarget(msg, msg.type);
-    if (!element) return;
+    const elements = findFxTargets(msg, msg.type);
+    if (!elements.length) return;
 
-    Idiomorph.morph(element, msg.value, {
-        morphStyle: 'innerHTML',
-        callbacks: { beforeNodeMorphed },
+    elements.forEach((element) => {
+        Idiomorph.morph(element, msg.value, {
+            morphStyle: 'innerHTML',
+            callbacks: { beforeNodeMorphed },
+        });
     });
+
     logger.log(`Morphed ${msg.type} [fx-key="${msg.key}"]`);
 }
 
 function handleTextUpdate(msg: TextUpdateMessage): void {
     logger.log(`[textUpdate] frame received: key="${msg.key}" owner="${msg.owner}" selector="${fxSelector(msg)}"`);
 
-    const element = findFxTarget(msg, 'textUpdate');
-    if (!element) return;
+    const elements = findFxTargets(msg, 'textUpdate');
+    if (!elements.length) return;
 
-    element.textContent = msg.value;
+    elements.forEach((element) => {
+        element.textContent = msg.value;
+    });
     logger.log(`[textUpdate] frame applied to [fx-key="${msg.key}"]`);
 }
 
@@ -191,7 +188,6 @@ frame.onReceivedMessage = async (event) => {
         await fetchFluxContext(event.data);
         if (window.FluxConfig) {
             applyConfig(window.FluxConfig);
-            if (inlineEditorEnabled()) initInlineEditing(frame.channel);
         }
         return;
     }
@@ -203,14 +199,12 @@ frame.onReceivedMessage = async (event) => {
         window.FluxConfig = event.data.config;
         logger.log('FluxConfig pushed from host:', window.FluxConfig);
         applyConfig(window.FluxConfig!);
-        if (inlineEditorEnabled()) initInlineEditing(frame.channel);
         return;
     }
 
     if (event.data.type === 'modeChange') {
         window.FluxMode = event.data.mode;
         logger.log('CMS mode:', event.data.mode);
-        if (window.FluxConfig && inlineEditorEnabled()) initInlineEditing(frame.channel);
         return;
     }
 
@@ -229,7 +223,6 @@ function bootstrapFrameContext(): void {
     applyContext(context);
     if (window.FluxConfig) {
         applyConfig(window.FluxConfig);
-        if (inlineEditorEnabled()) initInlineEditing(frame.channel);
     }
 }
 

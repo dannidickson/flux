@@ -15,7 +15,8 @@ Object.defineProperty(exports, "__esModule", ({
 }));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 /**
- * FrameChannel can implement the onReceivedMessage either in the constructor, or via frame.onReceivedMessage
+ * Establish port-based messaging channel with the parent frame.
+ * Message handler can be passed to constructor or set via onReceivedMessage property.
  *
  * @example client/cms-live-updates/frame.ts
  */
@@ -24,9 +25,7 @@ class FrameChannel {
     this.channel = null;
     this.messageHandler = event => this.setupMessageEvents(event);
     window.addEventListener("message", this.messageHandler);
-    // Set the default handler or use the one passed in
     this.onReceivedMessage = onReceivedMessage || this.defaultMessageHandler.bind(this);
-    // Signal to parent that frame is ready (handles both initial load and reloads)
     if (window.parent !== window) {
       logger_1.logger.log("[channel] frame posting FRAME_READY →", window.location.href);
       window.parent.postMessage({
@@ -56,7 +55,8 @@ class FrameChannel {
     }
   }
   /**
-   * Fallback if the FrameChannel implementation doesnt include custom `onReceivedMessage` handler
+   * Fallback used when no custom `onReceivedMessage` handler was supplied.
+   *
    * @param event
    */
   defaultMessageHandler(event) {
@@ -80,8 +80,7 @@ exports["default"] = FrameChannel;
  * Bridges the v2 `window.FluxBootstrap` payload into the v1 `window.FluxConfig`
  * shape that FluxLiveState / FluxDirectiveManager already consume.
  *
- * Phase 2 keeps existing client modules unchanged. Phase 3 will drop the
- * FluxConfig shape entirely.
+ * @todo need to merge in the various states from config to livestate into a single var
  */
 Object.defineProperty(exports, "__esModule", ({
   value: true
@@ -112,9 +111,16 @@ function adaptContextToFluxConfig(context) {
   const previous = window.FluxConfig;
   const previousPage = previous?.Segments?.find(s => s.Type === "Page");
   const nextPage = context.segments.find(s => s.Type === "Page");
+  const sameRecord = !!previousPage && !!nextPage && String(previousPage.ID) === String(nextPage.ID) && previousPage.ClassName === nextPage.ClassName;
   let changeSet = {};
-  if (previousPage && nextPage && String(previousPage.ID) === String(nextPage.ID) && previousPage.ClassName === nextPage.ClassName) {
+  if (sameRecord) {
     changeSet = previous?.ChangeSet ?? {};
+  } else if (previous?.ChangeSet && Object.keys(previous.ChangeSet).length > 0) {
+    logger_1.logger.error("Discarding pending changes: context switched records", {
+      from: previousPage ? `${previousPage.ClassName}#${previousPage.ID}` : null,
+      to: nextPage ? `${nextPage.ClassName}#${nextPage.ID}` : null,
+      discarded: Object.keys(previous.ChangeSet)
+    });
   }
   return {
     Segments: context.segments,
@@ -130,11 +136,9 @@ function applyContext(context) {
   logger_1.logger.log("Applied Flux context:", context.scope);
 }
 /**
- * Read the most-specific FluxBootstrap script tag in the document. When a
- * nested GridField item is being edited, both the LeftAndMain extension
- * and the GridFieldDetailForm extension push a `<script id="flux-bootstrap-data">`
- * into their respective forms — the inner one is later in DOM order and
- * should win.
+ * Read the most-specific FluxBootstrap script tag in the document.
+ * When nested items are edited, both LeftAndMain and GridFieldDetailForm add a
+ * `<script id="flux-bootstrap-data">` — the inner one (later in DOM order) takes precedence.
  */
 function readBootstrapScriptTag() {
   const nodes = document.querySelectorAll('script#flux-bootstrap-data');
@@ -174,11 +178,8 @@ function currentContextHint() {
 }
 /**
  * Host PJAX hook: read the FluxBootstrap from the most-specific
- * #flux-bootstrap-data <script> tag in the swapped form HTML.
- *
- * Standard CMS PJAX requests only fetch the CurrentForm/Content/Breadcrumbs
- * fragments — a custom fragment wouldn't be included — so the bootstrap
- * rides along inside the form HTML instead.
+ * #flux-bootstrap-data <script> tag in the swapped form HTML. Standard CMS PJAX
+ * requests only fetch CurrentForm/Content/Breadcrumbs, so the bootstrap is included inside the form HTML.
  */
 function applyPjaxBootstrapFromDom() {
   const payload = readBootstrapScriptTag();
@@ -201,8 +202,8 @@ async function fetchFluxContext(hint) {
 }
 /**
  * Fetch the context payload without applying it. Lets callers decide whether
- * to apply — the frame's boot fetch must not clobber a more-specific scope the
- * host may have pushed while the fetch was in flight.
+ * to apply — the frame's boot fetch must not overwrite a more-specific scope the
+ * host may have sent while the fetch was still running.
  */
 async function fetchContextPayload(hint) {
   const params = new URLSearchParams();
@@ -243,6 +244,7 @@ Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
 exports.fromElement = fromElement;
+exports.fromAttributes = fromAttributes;
 exports.getElementValue = getElementValue;
 exports.parse = parse;
 exports.applyConfig = applyConfig;
@@ -259,6 +261,24 @@ function fromElement(el) {
     proxySelector: el.getAttribute('fx-proxy'),
     proxyType: el.getAttribute('fx-proxy-type'),
     collectSelector: el.getAttribute('fx-collect')
+  };
+}
+/**
+ * Same directive, built from an attribute map rather than the element — for
+ * fields whose attributes only exist in the form schema (see FluxFormSchema).
+ */
+function fromAttributes(el, attributes) {
+  const key = attributes['fx-key'];
+  if (!key) return null;
+  return {
+    element: el,
+    key,
+    event: attributes['fx-event'] ?? null,
+    owner: attributes['fx-owner'] ?? null,
+    type: attributes['fx-type'] ?? null,
+    proxySelector: attributes['fx-proxy'] ?? null,
+    proxyType: attributes['fx-proxy-type'] ?? null,
+    collectSelector: attributes['fx-collect'] ?? null
   };
 }
 function getElementValue(el) {
@@ -296,22 +316,24 @@ function applyOwnerEditLink(segment) {
 function applySegmentFields(segment, segmentFields) {
   if (!segmentFields) return;
   for (const [, field] of Object.entries(segmentFields)) {
-    const parts = segment.owner ? [segment.owner, field.bind] : [field.bind];
-    const selector = parts.join(' ');
-    let element = null;
+    const bindParts = String(field.bind).split(',').map(part => part.trim());
+    const selector = bindParts.map(part => segment.owner ? `${segment.owner} ${part}` : part).join(', ');
+    let elements = null;
     try {
-      element = document.querySelector(selector);
+      elements = document.querySelectorAll(selector);
     } catch {
       logger_1.logger.warn(`Flux: invalid selector for ${field.key}: ${selector} (relation-item fields are stamped via relation config)`);
       continue;
     }
-    if (!element) {
+    if (!elements.length) {
       logger_1.logger.warn(`Flux: Cannot find element for: ${field.key} with selector: ${selector}`);
       continue;
     }
-    element.setAttribute('fx-key', field.key);
-    element.setAttribute('fx-type', field.type);
-    if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+    elements.forEach(element => {
+      element.setAttribute('fx-key', field.key);
+      element.setAttribute('fx-type', field.type);
+      if (segment.owner) element.setAttribute('fx-owner', segment.owner);
+    });
   }
 }
 function applySegmentRelations(_segment, segmentRelationFields) {
@@ -377,6 +399,10 @@ function applyRelationAttributes(el, owner, relationName, relationField) {
   el.setAttribute('fx-owner', owner);
   if (!relationField.Fields) return;
   for (const [fieldName, fieldConfig] of Object.entries(relationField.Fields)) {
+    if (!fieldConfig.bind) {
+      logger_1.logger.warn(`Flux: No selector for ${relationName}.${fieldName}`);
+      continue;
+    }
     const childEl = el.querySelector(fieldConfig.bind);
     if (!childEl) {
       logger_1.logger.warn(`Flux: Cannot find element for ${relationName}.${fieldName} with selector: ${fieldConfig.bind}`);
@@ -412,23 +438,15 @@ const FrameChannel_1 = __importDefault(__webpack_require__(/*! ../channels/Frame
 const idiomorph_1 = __importDefault(__webpack_require__(/*! idiomorph */ "./node_modules/idiomorph/dist/idiomorph.cjs.js"));
 const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
 const FluxDirectives_1 = __webpack_require__(/*! ./directives/FluxDirectives */ "./client/cms-live-updates/directives/FluxDirectives.ts");
-const InlineEditor_1 = __webpack_require__(/*! ../preview/InlineEditor */ "./client/preview/InlineEditor.ts");
 const FluxBootstrap_1 = __webpack_require__(/*! ./FluxBootstrap */ "./client/cms-live-updates/FluxBootstrap.ts");
 const beforeNodeMorphed = oldNode => oldNode.tagName !== 'SCRIPT';
 function fxSelector(msg) {
   if (msg.owner) {
     return `[fx-owner="${msg.owner}"][fx-key="${msg.key}"]`;
   }
-  return `[fx-key="${msg.key}"]`;
-}
-function isActivelyEditing(msg) {
-  const editingId = `${msg.key}|${msg.owner ?? ''}`;
-  return InlineEditor_1.activeEditingFields.has(editingId);
+  return `[fx-key="${msg.key}"]:not([fx-owner])`;
 }
 const frame = new FrameChannel_1.default();
-function inlineEditorEnabled() {
-  return window.FluxInlineEditorEnabled === true;
-}
 // we re-apply the fx-* directives after morphing the DOM
 function afterMorph() {
   if (!window.FluxConfig) {
@@ -436,24 +454,19 @@ function afterMorph() {
     return;
   }
   (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
-  if (inlineEditorEnabled()) (0, InlineEditor_1.initInlineEditing)(frame.channel);
 }
 /**
- * Find an fx-key element for the message. Warns if missing and
- * skips updates that would clobber a field the user is actively editing.
+ * Find all fx-key elements for the message. Warns if none are found and
+ * skips updates that would overwrite a field the user is actively editing.
  */
-function findFxTarget(msg, kind) {
+function findFxTargets(msg, kind) {
   const selector = fxSelector(msg);
-  const element = document.querySelector(selector);
-  if (!element) {
-    console.warn(`[findFxDirective] ${kind} DROPPED: no element matched ${selector}`, msg);
-    return null;
+  const elements = Array.from(document.querySelectorAll(selector));
+  if (!elements.length) {
+    logger_1.logger.warn(`[findFxDirective] ${kind} DROPPED: no element matched ${selector}`, msg);
+    return [];
   }
-  if (isActivelyEditing(msg)) {
-    console.warn(`[findFxDirective] ${kind} SKIPPED: "${msg.key}|${msg.owner ?? ''}" is in activeEditingFields ` + `(a preview inline-edit focus that never blurred). selector=${selector}`, msg);
-    return null;
-  }
-  return element;
+  return elements;
 }
 function handlePageTemplateUpdate(msg) {
   logger_1.logger.log('Morphing document with new HTML...');
@@ -474,7 +487,7 @@ function handlePageTemplateUpdate(msg) {
 function handleBlockUpdate(msg) {
   const ownerElement = document.querySelector(msg.targetOwner);
   if (!ownerElement) {
-    logger_1.logger.warn(`Block owner element not found: ${msg.targetOwner}`);
+    logger_1.logger.error(`Block owner element not found: ${msg.targetOwner} — block showing previous content`);
     return;
   }
   logger_1.logger.log(`Morphing block: ${msg.targetOwner}`);
@@ -491,30 +504,36 @@ function handleBlockUpdate(msg) {
 }
 function handlePatchTemplateUpdate(msg) {
   const selector = fxSelector(msg);
-  const element = document.querySelector(selector);
-  if (!element) {
+  const elements = document.querySelectorAll(selector);
+  if (!elements.length) {
     logger_1.logger.warn(`[patchTemplateUpdate]: element not found for ${selector}`);
     return;
   }
-  element.innerHTML = msg.value;
+  elements.forEach(element => {
+    element.innerHTML = msg.value;
+  });
   logger_1.logger.log(`[patchTemplateUpdate] Patched element ${selector}`);
 }
 function handleRichTextUpdate(msg) {
-  const element = findFxTarget(msg, msg.type);
-  if (!element) return;
-  idiomorph_1.default.morph(element, msg.value, {
-    morphStyle: 'innerHTML',
-    callbacks: {
-      beforeNodeMorphed
-    }
+  const elements = findFxTargets(msg, msg.type);
+  if (!elements.length) return;
+  elements.forEach(element => {
+    idiomorph_1.default.morph(element, msg.value, {
+      morphStyle: 'innerHTML',
+      callbacks: {
+        beforeNodeMorphed
+      }
+    });
   });
   logger_1.logger.log(`Morphed ${msg.type} [fx-key="${msg.key}"]`);
 }
 function handleTextUpdate(msg) {
   logger_1.logger.log(`[textUpdate] frame received: key="${msg.key}" owner="${msg.owner}" selector="${fxSelector(msg)}"`);
-  const element = findFxTarget(msg, 'textUpdate');
-  if (!element) return;
-  element.textContent = msg.value;
+  const elements = findFxTargets(msg, 'textUpdate');
+  if (!elements.length) return;
+  elements.forEach(element => {
+    element.textContent = msg.value;
+  });
   logger_1.logger.log(`[textUpdate] frame applied to [fx-key="${msg.key}"]`);
 }
 const handlers = {
@@ -546,7 +565,6 @@ frame.onReceivedMessage = async event => {
     await (0, FluxBootstrap_1.fetchFluxContext)(event.data);
     if (window.FluxConfig) {
       (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
-      if (inlineEditorEnabled()) (0, InlineEditor_1.initInlineEditing)(frame.channel);
     }
     return;
   }
@@ -557,13 +575,11 @@ frame.onReceivedMessage = async event => {
     window.FluxConfig = event.data.config;
     logger_1.logger.log('FluxConfig pushed from host:', window.FluxConfig);
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
-    if (inlineEditorEnabled()) (0, InlineEditor_1.initInlineEditing)(frame.channel);
     return;
   }
   if (event.data.type === 'modeChange') {
     window.FluxMode = event.data.mode;
     logger_1.logger.log('CMS mode:', event.data.mode);
-    if (window.FluxConfig && inlineEditorEnabled()) (0, InlineEditor_1.initInlineEditing)(frame.channel);
     return;
   }
   updateElement(event.data);
@@ -578,7 +594,6 @@ function bootstrapFrameContext() {
   (0, FluxBootstrap_1.applyContext)(context);
   if (window.FluxConfig) {
     (0, FluxDirectives_1.applyConfig)(window.FluxConfig);
-    if (inlineEditorEnabled()) (0, InlineEditor_1.initInlineEditing)(frame.channel);
   }
 }
 if (document.readyState === 'loading') {
@@ -619,1327 +634,6 @@ exports.logger = {
   timeEnd: bind('timeEnd'),
   timeLog: bind('timeLog')
 };
-
-/***/ }),
-
-/***/ "./client/preview/FluxBlockState.ts":
-/*!******************************************!*\
-  !*** ./client/preview/FluxBlockState.ts ***!
-  \******************************************/
-/***/ (function(__unused_webpack_module, exports) {
-
-"use strict";
-
-
-/**
- * Tracks which Flux blocks/relations are currently "open" for inline editing,
- * and notifies subscribers when that set changes.
- *
- * A block is identified by its `fx-owner` selector (e.g. `#e42`).
- * Replaces the ad-hoc `openBlocks` Set that used to live inside InlineEditor.
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.blockState = void 0;
-class FluxBlockState {
-  constructor() {
-    this.open = new Set();
-    this.listeners = new Set();
-  }
-  isOpen(owner) {
-    return this.open.has(owner);
-  }
-  activeOwner() {
-    // We currently allow only one open block at a time — the most-recently
-    // opened wins. If multiple need to coexist, fan out the listeners.
-    const it = this.open.values();
-    let last = null;
-    for (const owner of it) last = owner;
-    return last;
-  }
-  openBlock(owner) {
-    // Close everything else so only one block is on the stage at a time.
-    for (const existing of [...this.open]) {
-      if (existing !== owner) this.closeBlock(existing);
-    }
-    if (this.open.has(owner)) return;
-    this.open.add(owner);
-    this.emit({
-      owner,
-      open: true
-    });
-  }
-  closeBlock(owner) {
-    if (!this.open.delete(owner)) return;
-    this.emit({
-      owner,
-      open: false
-    });
-  }
-  toggle(owner) {
-    if (this.open.has(owner)) {
-      this.closeBlock(owner);
-      return false;
-    }
-    this.openBlock(owner);
-    return true;
-  }
-  closeAll() {
-    for (const owner of [...this.open]) this.closeBlock(owner);
-  }
-  subscribe(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  emit(event) {
-    for (const listener of this.listeners) listener(event);
-  }
-}
-exports.blockState = new FluxBlockState();
-
-/***/ }),
-
-/***/ "./client/preview/FluxElements.ts":
-/*!****************************************!*\
-  !*** ./client/preview/FluxElements.ts ***!
-  \****************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxUploadOverlay = exports.FluxLinkOverlay = exports.FluxInlineHandle = exports.FluxEditOpenButton = exports.FluxActionToolbar = void 0;
-exports.registerFluxElements = registerFluxElements;
-const FluxActionToolbar_1 = __webpack_require__(/*! ./overlays/FluxActionToolbar */ "./client/preview/overlays/FluxActionToolbar.ts");
-Object.defineProperty(exports, "FluxActionToolbar", ({
-  enumerable: true,
-  get: function () {
-    return FluxActionToolbar_1.FluxActionToolbar;
-  }
-}));
-const FluxEditOpenButton_1 = __webpack_require__(/*! ./overlays/FluxEditOpenButton */ "./client/preview/overlays/FluxEditOpenButton.ts");
-Object.defineProperty(exports, "FluxEditOpenButton", ({
-  enumerable: true,
-  get: function () {
-    return FluxEditOpenButton_1.FluxEditOpenButton;
-  }
-}));
-const FluxInlineHandle_1 = __webpack_require__(/*! ./overlays/FluxInlineHandle */ "./client/preview/overlays/FluxInlineHandle.ts");
-Object.defineProperty(exports, "FluxInlineHandle", ({
-  enumerable: true,
-  get: function () {
-    return FluxInlineHandle_1.FluxInlineHandle;
-  }
-}));
-const FluxLinkOverlay_1 = __webpack_require__(/*! ./overlays/FluxLinkOverlay */ "./client/preview/overlays/FluxLinkOverlay.ts");
-Object.defineProperty(exports, "FluxLinkOverlay", ({
-  enumerable: true,
-  get: function () {
-    return FluxLinkOverlay_1.FluxLinkOverlay;
-  }
-}));
-const FluxUploadOverlay_1 = __webpack_require__(/*! ./overlays/FluxUploadOverlay */ "./client/preview/overlays/FluxUploadOverlay.ts");
-Object.defineProperty(exports, "FluxUploadOverlay", ({
-  enumerable: true,
-  get: function () {
-    return FluxUploadOverlay_1.FluxUploadOverlay;
-  }
-}));
-/**
- * Register every Flux overlay Custom Element exactly once. Safe to call
- * multiple times — `customElements.get(tag)` guards against re-registration
- * (which would otherwise throw).
- */
-function registerFluxElements() {
-  define("flux-edit-open-btn", FluxEditOpenButton_1.FluxEditOpenButton);
-  define("flux-action-toolbar", FluxActionToolbar_1.FluxActionToolbar);
-  define("flux-upload-overlay", FluxUploadOverlay_1.FluxUploadOverlay);
-  define("flux-link-overlay", FluxLinkOverlay_1.FluxLinkOverlay);
-  define("flux-inline-handle", FluxInlineHandle_1.FluxInlineHandle);
-}
-function define(tag, ctor) {
-  if (customElements.get(tag)) return;
-  customElements.define(tag, ctor);
-}
-
-/***/ }),
-
-/***/ "./client/preview/FluxHoverController.ts":
-/*!***********************************************!*\
-  !*** ./client/preview/FluxHoverController.ts ***!
-  \***********************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-/**
- * Single hover state machine for the preview frame.
- *
- * Replaces the per-widget `hoverWithGrace` callbacks. Resolves the layering
- * bug where a block button and an inner fx-key affordance could both render
- * at once.
- *
- * Rules:
- *  - The cursor's nearest `[fx-owner]` ancestor is the "active block".
- *  - If that block is *closed*, only the block-level overlays (Edit/Open
- *    button, action toolbar) show. Inner fx-key overlays are suppressed.
- *  - If that block is *open*, inner fx-key overlays show normally; the
- *    block-level button stays visible as a "Close" affordance.
- *  - When the cursor leaves both the target and the overlay, a grace
- *    timer hides the overlay so the user can move onto popups.
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.hoverController = void 0;
-const FluxBlockState_1 = __webpack_require__(/*! ./FluxBlockState */ "./client/preview/FluxBlockState.ts");
-const GRACE_MS = 200;
-class FluxHoverController {
-  constructor() {
-    this.entries = [];
-    this.hideTimers = new Map();
-    this.installed = false;
-    this.onPointerOver = event => {
-      const node = event.target;
-      if (!node) return;
-      const block = node.closest("[fx-owner]");
-      const blockOwner = block?.getAttribute("fx-owner") ?? null;
-      const ctx = {
-        blockOwner
-      };
-      for (const entry of this.entries) {
-        if (entry.overlay.contains(node)) {
-          this.cancelHide(entry);
-          continue;
-        }
-        if (!entry.target.contains(node)) continue;
-        // Block-layer overlays whose target sits *inside* a different
-        // open block should stand down — that block owns the stage.
-        if (entry.layer === "block" && blockOwner && FluxBlockState_1.blockState.activeOwner() && FluxBlockState_1.blockState.activeOwner() !== this.ownerOf(entry.target)) {
-          continue;
-        }
-        if (!this.isLayerActive(entry, ctx)) continue;
-        this.cancelHide(entry);
-        entry.show();
-      }
-    };
-    this.onPointerOut = event => {
-      const related = event.relatedTarget ?? null;
-      for (const entry of this.entries) {
-        const wasInside = entry.target.contains(event.target) || entry.overlay.contains(event.target);
-        if (!wasInside) continue;
-        const stillInside = related && (entry.target.contains(related) || entry.overlay.contains(related));
-        if (stillInside) continue;
-        this.scheduleHide(entry);
-      }
-    };
-    this.hideAll = () => {
-      for (const entry of this.entries) {
-        this.cancelHide(entry);
-        entry.hide();
-      }
-    };
-  }
-  install() {
-    if (this.installed) return;
-    this.installed = true;
-    document.addEventListener("pointerover", this.onPointerOver, {
-      capture: true
-    });
-    document.addEventListener("pointerout", this.onPointerOut, {
-      capture: true
-    });
-    window.addEventListener("scroll", this.hideAll, {
-      passive: true,
-      capture: true
-    });
-    FluxBlockState_1.blockState.subscribe(event => {
-      if (!event.open) this.hideAll();
-    });
-  }
-  register(entry) {
-    this.entries.push(entry);
-    return () => {
-      const i = this.entries.indexOf(entry);
-      if (i >= 0) this.entries.splice(i, 1);
-      this.cancelHide(entry);
-      entry.hide();
-    };
-  }
-  reset() {
-    for (const entry of [...this.entries]) {
-      this.cancelHide(entry);
-      entry.hide();
-    }
-    this.entries.length = 0;
-  }
-  isLayerActive(entry, ctx) {
-    if (entry.layer === "block") return true;
-    // Field-layer overlays only activate when their containing block is open.
-    if (!ctx.blockOwner) return false;
-    return FluxBlockState_1.blockState.isOpen(ctx.blockOwner);
-  }
-  ownerOf(el) {
-    return el.closest("[fx-owner]")?.getAttribute("fx-owner") ?? null;
-  }
-  scheduleHide(entry) {
-    this.cancelHide(entry);
-    const t = setTimeout(() => {
-      this.hideTimers.delete(entry);
-      entry.hide();
-    }, GRACE_MS);
-    this.hideTimers.set(entry, t);
-  }
-  cancelHide(entry) {
-    const t = this.hideTimers.get(entry);
-    if (t !== undefined) {
-      clearTimeout(t);
-      this.hideTimers.delete(entry);
-    }
-  }
-}
-exports.hoverController = new FluxHoverController();
-
-/***/ }),
-
-/***/ "./client/preview/FluxOverlayElement.ts":
-/*!**********************************************!*\
-  !*** ./client/preview/FluxOverlayElement.ts ***!
-  \**********************************************/
-/***/ (function(__unused_webpack_module, exports) {
-
-"use strict";
-
-
-/**
- * Shared base for Flux preview-overlay Custom Elements.
- *
- *  - ShadowDOM root with adoptedStyleSheets pipeline
- *  - attach(target) / detach() / position() / show() / hide() lifecycle
- *  - emit(): typed FrameToHostMessage dispatch on a "flux-overlay-message"
- *    CustomEvent that InlineEditor forwards onto the host channel
- *
- * Overlays are appended to `document.body` (not the target's subtree) so
- * they aren't clipped by overflow:hidden ancestors. `position(rect)` is
- * called when the controller decides to show.
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxOverlayElement = void 0;
-class FluxOverlayElement extends HTMLElement {
-  constructor(stylesheet) {
-    super();
-    this.target = null;
-    this.shadow = this.attachShadow({
-      mode: "open"
-    });
-    this.shadow.adoptedStyleSheets = [stylesheet];
-  }
-  attach(target) {
-    this.target = target;
-    if (!this.isConnected) document.body.appendChild(this);
-    this.hide();
-  }
-  detach() {
-    this.hide();
-    this.target = null;
-    if (this.isConnected) this.remove();
-  }
-  /**
-   * Position the overlay relative to the target's current bounding rect.
-   * Default puts it at the top-right corner; subclasses override as needed.
-   */
-  position(rect) {
-    const r = rect ?? this.target?.getBoundingClientRect();
-    if (!r) return;
-    this.style.position = "fixed";
-    this.style.top = `${r.top}px`;
-    this.style.left = `${r.right}px`;
-  }
-  show() {
-    if (!this.target) return;
-    this.position();
-    this.setAttribute("visible", "");
-  }
-  hide() {
-    this.removeAttribute("visible");
-  }
-  /**
-   * Emit a typed message to the host channel via a bubbling CustomEvent that
-   * InlineEditor (the orchestrator) forwards onto the MessageChannel.
-   */
-  emit(message) {
-    this.dispatchEvent(new CustomEvent("flux-overlay-message", {
-      bubbles: true,
-      composed: true,
-      detail: message
-    }));
-  }
-}
-exports.FluxOverlayElement = FluxOverlayElement;
-
-/***/ }),
-
-/***/ "./client/preview/FluxScopeGuard.ts":
-/*!******************************************!*\
-  !*** ./client/preview/FluxScopeGuard.ts ***!
-  \******************************************/
-/***/ (function(__unused_webpack_module, exports) {
-
-"use strict";
-
-
-/**
- * Decides whether a Flux-bound element is editable for the current scope.
- *
- * Scope is set by the host via window.FluxScope (initialised by
- * FluxBootstrap.applyContext).
- *
- *  page          → every fx-* element is editable
- *  block         → only elements whose nearest fx-owner ancestor matches
- *                  scope.ownerId
- *  relation-item → only elements whose owner equals scope.ownerId
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxScopeGuard = void 0;
-class FluxScopeGuard {
-  constructor(scope) {
-    this.scope = scope ?? window.FluxScope ?? {
-      kind: "page",
-      ownerId: null
-    };
-  }
-  static current() {
-    return new FluxScopeGuard();
-  }
-  get kind() {
-    return this.scope.kind;
-  }
-  /**
-   * True if the given fx-* element is in-scope for the current edit context.
-   * Pass the element itself, not its owner — we resolve the nearest
-   * fx-owner ancestor or the element's own fx-owner attribute.
-   */
-  canEdit(element) {
-    if (this.scope.kind === "page") {
-      return true;
-    }
-    const elementOwner = this.resolveOwner(element);
-    if (!elementOwner) {
-      return false;
-    }
-    return elementOwner === this.scope.ownerId;
-  }
-  resolveOwner(element) {
-    const own = element.getAttribute("fx-owner");
-    if (own) return own;
-    const ancestor = element.closest("[fx-owner]");
-    return ancestor?.getAttribute("fx-owner") ?? null;
-  }
-}
-exports.FluxScopeGuard = FluxScopeGuard;
-
-/***/ }),
-
-/***/ "./client/preview/FluxSortable.ts":
-/*!****************************************!*\
-  !*** ./client/preview/FluxSortable.ts ***!
-  \****************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-/**
- * Drag-and-drop reorder within a single Flux relation.
- *
- * A drop-zone container is marked by FluxDirectives with:
- *   fx-sortable
- *   fx-grid-name="<relation>"
- *   fx-grid-item-selector="<css>"
- *   fx-grid-sort-field="<column>"  (optional — server uses default if absent)
- *
- * Each item inside has `fx-owner="<recordId>"` (already stamped by relation
- * binding). On drop, we compute the new ordered ID list from DOM order
- * and emit a `gridFieldAction` message with `action: 'reorder'`. The
- * host translates this into the same request `GridFieldOrderableRows`
- * would normally fire.
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.initSortable = initSortable;
-const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
-const READY_ATTR = "fx-sortable-ready";
-function initSortable(channel) {
-  if (!channel) return;
-  document.querySelectorAll("[fx-sortable]").forEach(zone => {
-    if (zone.hasAttribute(READY_ATTR)) return;
-    zone.setAttribute(READY_ATTR, "1");
-    const relationKey = zone.getAttribute("fx-grid-name");
-    const itemSelector = zone.getAttribute("fx-grid-item-selector");
-    if (!relationKey || !itemSelector) return;
-    const config = {
-      relationKey,
-      itemSelector,
-      sortField: zone.getAttribute("fx-grid-sort-field") ?? undefined
-    };
-    bindZone(zone, config, channel);
-  });
-}
-function bindZone(zone, config, channel) {
-  const items = Array.from(zone.querySelectorAll(config.itemSelector));
-  items.forEach(item => attachDrag(zone, item, config, channel));
-}
-function attachDrag(zone, item, config, channel) {
-  var _a;
-  item.setAttribute("draggable", "true");
-  (_a = item.style).cursor || (_a.cursor = "grab");
-  let fromIndex = -1;
-  item.addEventListener("dragstart", event => {
-    item.setAttribute("data-flux-dragging", "");
-    fromIndex = indexOf(zone, item, config.itemSelector);
-    event.dataTransfer?.setData("text/plain", item.getAttribute("fx-owner") ?? "");
-    event.dataTransfer && (event.dataTransfer.effectAllowed = "move");
-  });
-  item.addEventListener("dragend", () => {
-    item.removeAttribute("data-flux-dragging");
-    const owner = item.getAttribute("fx-owner");
-    const toIndex = indexOf(zone, item, config.itemSelector);
-    if (!owner || toIndex === fromIndex || toIndex < 0) return;
-    const orderedIds = Array.from(zone.querySelectorAll(config.itemSelector)).map(el => el.getAttribute("fx-owner")).filter(id => !!id);
-    logger_1.logger.log(`dragEventEnd: ${config.relationKey} moved ${owner} ${fromIndex} → ${toIndex}`);
-    channel.postMessage({
-      type: "dragEventEnd",
-      key: config.relationKey,
-      owner,
-      fromIndex,
-      toIndex,
-      orderedIds,
-      sortField: config.sortField
-    });
-  });
-  item.addEventListener("dragover", event => {
-    event.preventDefault();
-    const dragging = zone.querySelector("[data-flux-dragging]");
-    if (!dragging || dragging === item) return;
-    const rect = item.getBoundingClientRect();
-    const after = event.clientY - rect.top > rect.height / 2;
-    if (after) item.after(dragging);else item.before(dragging);
-  });
-}
-function indexOf(zone, item, itemSelector) {
-  const items = Array.from(zone.querySelectorAll(itemSelector));
-  return items.indexOf(item);
-}
-
-/***/ }),
-
-/***/ "./client/preview/FluxStage.ts":
-/*!*************************************!*\
-  !*** ./client/preview/FluxStage.ts ***!
-  \*************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-/**
- * "Stage" mode — when a block is open for editing, dim the rest of the
- * page so the open block reads as the active surface.
- *
- *  - Renders a single backdrop element behind the open block.
- *  - Sets `data-flux-stage` on <body> so themes can react.
- *  - Closes the open block on backdrop click, click-outside, or Esc.
- *
- * The open block itself is raised above the backdrop via the
- * `[data-flux-editing]` selector in preview.scss.
- */
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.stage = void 0;
-const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
-const FluxBlockState_1 = __webpack_require__(/*! ./FluxBlockState */ "./client/preview/FluxBlockState.ts");
-const BACKDROP_ID = "flux-stage-backdrop";
-const STAGE_BODY_ATTR = "data-flux-stage";
-class FluxStage {
-  constructor() {
-    this.backdrop = null;
-    this.installed = false;
-    this.onPointerDown = event => {
-      const activeOwner = FluxBlockState_1.blockState.activeOwner();
-      if (!activeOwner) return;
-      const target = event.target;
-      if (!target) return;
-      // Inside an open block or one of its child overlays → ignore.
-      // We check for any open block element via [data-flux-editing] plus
-      // any custom-element overlay (flux-*) so popups don't dismiss it.
-      if (target.closest("[data-flux-editing]")) return;
-      if (target.closest("flux-edit-open-btn, flux-action-toolbar, flux-upload-overlay, flux-link-overlay, flux-inline-handle")) return;
-      if (target.id === BACKDROP_ID) return; // backdrop has its own handler
-      // Click on bare page → close.
-      logger_1.logger.log("Click outside open block → closing");
-      FluxBlockState_1.blockState.closeAll();
-    };
-    this.onKeyDown = event => {
-      if (event.key !== "Escape") return;
-      if (!FluxBlockState_1.blockState.activeOwner()) return;
-      logger_1.logger.log("Esc pressed → closing open block");
-      FluxBlockState_1.blockState.closeAll();
-    };
-  }
-  install() {
-    if (this.installed) return;
-    this.installed = true;
-    FluxBlockState_1.blockState.subscribe(event => {
-      if (event.open) this.show();else if (!FluxBlockState_1.blockState.activeOwner()) this.hide();
-    });
-    document.addEventListener("pointerdown", this.onPointerDown, {
-      capture: true
-    });
-    document.addEventListener("keydown", this.onKeyDown);
-  }
-  show() {
-    document.body.setAttribute(STAGE_BODY_ATTR, "");
-    if (!this.backdrop) {
-      const el = document.createElement("div");
-      el.id = BACKDROP_ID;
-      el.addEventListener("click", () => {
-        logger_1.logger.log("Stage backdrop clicked → closing open block");
-        FluxBlockState_1.blockState.closeAll();
-      });
-      document.body.appendChild(el);
-      this.backdrop = el;
-    }
-  }
-  hide() {
-    document.body.removeAttribute(STAGE_BODY_ATTR);
-    this.backdrop?.remove();
-    this.backdrop = null;
-  }
-}
-exports.stage = new FluxStage();
-
-/***/ }),
-
-/***/ "./client/preview/InlineEditor.ts":
-/*!****************************************!*\
-  !*** ./client/preview/InlineEditor.ts ***!
-  \****************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.activeEditingFields = void 0;
-exports.initInlineEditing = initInlineEditing;
-const logger_1 = __webpack_require__(/*! ../core/logger */ "./client/core/logger.ts");
-const FluxBlockState_1 = __webpack_require__(/*! ./FluxBlockState */ "./client/preview/FluxBlockState.ts");
-const FluxElements_1 = __webpack_require__(/*! ./FluxElements */ "./client/preview/FluxElements.ts");
-const FluxHoverController_1 = __webpack_require__(/*! ./FluxHoverController */ "./client/preview/FluxHoverController.ts");
-const FluxScopeGuard_1 = __webpack_require__(/*! ./FluxScopeGuard */ "./client/preview/FluxScopeGuard.ts");
-const FluxSortable_1 = __webpack_require__(/*! ./FluxSortable */ "./client/preview/FluxSortable.ts");
-const FluxStage_1 = __webpack_require__(/*! ./FluxStage */ "./client/preview/FluxStage.ts");
-const TEXT_SELECTOR = '[fx-key][fx-type="Text"]';
-const FILE_SELECTOR = '[fx-key][fx-type="UploadField"]';
-const LINK_SELECTOR = '[fx-key][fx-type="LinkField"]';
-exports.activeEditingFields = new Set();
-const TOOLBAR_TAGS = 'flux-upload-overlay, flux-link-overlay, flux-action-toolbar, flux-edit-open-btn, flux-inline-handle';
-const READY_ATTRS = ['fx-inline-ready', 'fx-block-btn-ready', 'data-flux-block'];
-let initAbort = null;
-let blockStateUnsubscribes = [];
-/**
- * Tear down anything from a previous init: abort listeners, reset the hover
- * controller, remove the body-appended toolbars, and clear the "already
- * bound" sentinels so elements can be re-processed.
- */
-function teardownPreviousInit() {
-  initAbort?.abort();
-  initAbort = null;
-  blockStateUnsubscribes.forEach(fn => fn());
-  blockStateUnsubscribes = [];
-  FluxHoverController_1.hoverController.reset();
-  FluxBlockState_1.blockState.closeAll();
-  document.querySelectorAll(TOOLBAR_TAGS).forEach(el => el.remove());
-  for (const attr of READY_ATTRS) {
-    document.querySelectorAll(`[${attr}]`).forEach(el => el.removeAttribute(attr));
-  }
-}
-function fieldId(key, owner) {
-  return `${key}|${owner ?? ''}`;
-}
-function setBlockEditable(owner, editable) {
-  document.querySelectorAll(`[fx-owner="${owner}"][fx-type="Text"]`).forEach(el => {
-    el.contentEditable = String(editable);
-  });
-}
-/**
- * Owners come in two flavours:
- *   - selector-style ("#e42") for Elemental blocks — the owner string IS the
- *     CSS selector of the block's container element
- *   - id-style ("42")          for relation items — the owner is the record
- *     id and the container is the row carrying [fx-owner="42"]
- *
- * Try id-attribute lookup first, fall back to selector lookup.
- */
-function resolveOwnerEl(owner) {
-  const byAttr = document.querySelector(`[fx-owner="${CSS.escape(owner)}"]`);
-  if (byAttr) return byAttr;
-  try {
-    return document.querySelector(owner);
-  } catch {
-    return null;
-  }
-}
-function initInlineEditing(channel) {
-  if (!channel) {
-    logger_1.logger.warn('InlineEditor: no channel available, skipping setup');
-    return;
-  }
-  (0, FluxElements_1.registerFluxElements)();
-  FluxHoverController_1.hoverController.install();
-  FluxStage_1.stage.install();
-  teardownPreviousInit();
-  initAbort = new AbortController();
-  const signal = initAbort.signal;
-  const guard = FluxScopeGuard_1.FluxScopeGuard.current();
-  // Reflect open/close into the DOM + contentEditable for any block.
-  blockStateUnsubscribes.push(FluxBlockState_1.blockState.subscribe(({
-    owner,
-    open
-  }) => {
-    setBlockEditable(owner, open);
-    const ownerEl = resolveOwnerEl(owner);
-    if (ownerEl) {
-      ownerEl.toggleAttribute('data-flux-editing', open);
-    }
-  }));
-  initTextEditing(channel, signal, guard);
-  initFileUploadEditing(channel, signal, guard);
-  initLinkFieldEditing(channel, signal, guard);
-  initGridFieldEditing(channel, signal, guard);
-  initBlockEditButtons(channel, signal, guard);
-  (0, FluxSortable_1.initSortable)(channel);
-  // If the CMS is editing a single block or relation item, auto-stage it
-  // so the user lands on the right "stage" without an extra click.
-  autoStageScopedOwner();
-}
-/**
- * When scope.kind is 'block' or 'relation-item', the CMS is editing one
- * specific thing — open it in the frame so its stage backdrop and inner
- * affordances are immediately available.
- */
-function autoStageScopedOwner() {
-  const scope = window.FluxScope;
-  if (!scope || scope.kind === 'page' || !scope.ownerId) return;
-  // Defer to next frame so the block container has had its
-  // data-flux-block attribute stamped by initBlockEditButtons.
-  requestAnimationFrame(() => {
-    FluxBlockState_1.blockState.openBlock(scope.ownerId);
-  });
-}
-function initTextEditing(channel, signal, guard) {
-  document.querySelectorAll(TEXT_SELECTOR).forEach(el => {
-    if (el.hasAttribute('fx-inline-ready')) return;
-    el.setAttribute('fx-inline-ready', '1');
-    if (!guard.canEdit(el)) {
-      el.setAttribute('fx-out-of-scope', '');
-      return;
-    }
-    const owner = el.getAttribute('fx-owner') ?? null;
-    const isGridFieldChild = el.closest('[fx-type="GridField"]') !== null;
-    // Page-scope text without an owner is always editable; otherwise the
-    // text only becomes editable when its block is open (or when nested
-    // inside a GridField item, where the row itself is the unit).
-    const initialEditable = owner === null || isGridFieldChild;
-    el.contentEditable = String(initialEditable);
-    el.addEventListener('focus', () => {
-      const key = el.getAttribute('fx-key');
-      exports.activeEditingFields.add(fieldId(key, owner));
-    }, {
-      signal
-    });
-    el.addEventListener('blur', () => {
-      const key = el.getAttribute('fx-key');
-      exports.activeEditingFields.delete(fieldId(key, owner));
-    }, {
-      signal
-    });
-    el.addEventListener('input', () => {
-      const key = el.getAttribute('fx-key');
-      // Fallback to a single space so the element keeps a text node and stays visible.
-      const value = el.innerText.trim() || ' ';
-      logger_1.logger.log(`Inline edit → key: "${key}", value: "${value}"`);
-      channel.postMessage({
-        type: 'inlineEditUpdate',
-        key,
-        value,
-        owner
-      });
-    }, {
-      signal
-    });
-  });
-}
-function initFileUploadEditing(channel, _signal, guard) {
-  document.querySelectorAll(FILE_SELECTOR).forEach(el => {
-    if (el.hasAttribute('fx-inline-ready')) return;
-    el.setAttribute('fx-inline-ready', '1');
-    if (!guard.canEdit(el)) {
-      el.setAttribute('fx-out-of-scope', '');
-      return;
-    }
-    const key = el.getAttribute('fx-key');
-    const owner = el.getAttribute('fx-owner') ?? null;
-    const toolbar = document.createElement('flux-upload-overlay');
-    document.body.appendChild(toolbar);
-    FluxHoverController_1.hoverController.register({
-      layer: 'field',
-      target: el,
-      overlay: toolbar,
-      show: () => toolbar.show(el.getBoundingClientRect()),
-      hide: () => toolbar.hide()
-    });
-    toolbar.onPreview(() => {
-      logger_1.logger.log(`File upload preview → key: "${key}"`);
-      channel.postMessage({
-        type: 'fileUploadClick',
-        key,
-        owner
-      });
-    });
-    toolbar.onDelete(() => {
-      logger_1.logger.log(`File upload unlink → key: "${key}"`);
-      el.querySelector('.btn.uploadfield-item__remove-btn')?.click();
-    });
-  });
-}
-function initLinkFieldEditing(channel, signal, guard) {
-  document.querySelectorAll(LINK_SELECTOR).forEach(el => {
-    if (el.hasAttribute('fx-inline-ready')) return;
-    el.setAttribute('fx-inline-ready', '1');
-    if (!guard.canEdit(el)) {
-      el.setAttribute('fx-out-of-scope', '');
-      return;
-    }
-    const key = el.getAttribute('fx-key');
-    const owner = el.getAttribute('fx-owner') ?? null;
-    const dot = document.createElement('flux-link-overlay');
-    document.body.appendChild(dot);
-    FluxHoverController_1.hoverController.register({
-      layer: 'field',
-      target: el,
-      overlay: dot,
-      show: () => {
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        dot.show(range.getBoundingClientRect());
-      },
-      hide: () => dot.hide()
-    });
-    dot.addEventListener('click', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      logger_1.logger.log(`Link field edit dot click → key: "${key}"`);
-      channel.postMessage({
-        type: 'linkFieldClick',
-        key,
-        owner
-      });
-    }, {
-      signal
-    });
-  });
-}
-const GRID_ACTION_ICONS = {
-  edit: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm2.92 1.83H5v-.75l9.06-9.06.75.75-8.89 9.06zM20.71 5.63l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83a1 1 0 0 0 0-1.41z"/></svg>`,
-  delete: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
-  archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/></svg>`
-};
-function initGridFieldEditing(channel, _signal, guard) {
-  document.querySelectorAll('[fx-type="GridField"][fx-key][fx-owner]').forEach(el => {
-    if (el.hasAttribute('fx-inline-ready')) return;
-    el.setAttribute('fx-inline-ready', '1');
-    if (!guard.canEdit(el)) {
-      el.setAttribute('fx-out-of-scope', '');
-      return;
-    }
-    const key = el.getAttribute('fx-key');
-    const owner = el.getAttribute('fx-owner');
-    const actions = JSON.parse(el.getAttribute('fx-grid-actions') ?? '["edit"]');
-    const toolbar = document.createElement('flux-action-toolbar');
-    document.body.appendChild(toolbar);
-    actions.forEach(action => {
-      toolbar.addAction(action, GRID_ACTION_ICONS[action] ?? action, () => {
-        logger_1.logger.log(`GridField action → key: "${key}", owner: "${owner}", action: "${action}"`);
-        channel.postMessage({
-          type: 'gridFieldAction',
-          key,
-          owner,
-          action
-        });
-      });
-    });
-    FluxHoverController_1.hoverController.register({
-      layer: 'block',
-      target: el,
-      overlay: toolbar,
-      show: () => toolbar.show(el.getBoundingClientRect()),
-      hide: () => toolbar.hide()
-    });
-  });
-}
-/**
- * Edit/Open button — implements the behaviour matrix from flux-v2-ui-plan.md §4.
- *
- *   inline-editable + (split | preview)  → "Edit" / "Close", toggles block open
- *   non-inline       + split             → "Open ↗", host navigates CMS to editLink
- *   non-inline       + preview           → "Open ↗", host navigates CMS to editLink
- */
-function initBlockEditButtons(channel, signal, guard) {
-  const owners = new Set();
-  document.querySelectorAll('[fx-owner]').forEach(el => {
-    owners.add(el.getAttribute('fx-owner'));
-  });
-  owners.forEach(owner => {
-    // In block / relation-item scope, only the active owner gets a button.
-    if (guard.kind !== 'page' && owner !== (window.FluxScope?.ownerId ?? null)) {
-      return;
-    }
-    const ownerEl = resolveOwnerEl(owner);
-    if (!ownerEl) return;
-    if (ownerEl.hasAttribute('fx-block-btn-ready')) return;
-    ownerEl.setAttribute('fx-block-btn-ready', '1');
-    // Marker so CSS can target the block container (vs its fx-key children).
-    ownerEl.setAttribute('data-flux-block', '');
-    if (getComputedStyle(ownerEl).position === 'static') {
-      ownerEl.style.position = 'relative';
-    }
-    const isInlineEditable = ownerEl.querySelector(TEXT_SELECTOR) !== null;
-    const editLink = ownerEl.getAttribute('fx-edit-link');
-    // If a block has no inline-editable content and no edit link, the
-    // button has nothing useful to do — skip it.
-    if (!isInlineEditable && !editLink) return;
-    const btn = document.createElement('flux-edit-open-btn');
-    btn.inline = isInlineEditable;
-    const updateButton = () => {
-      if (!isInlineEditable) {
-        btn.label = 'Open ↗';
-        btn.open = false;
-        return;
-      }
-      const isOpen = FluxBlockState_1.blockState.isOpen(owner);
-      btn.label = isOpen ? 'Close' : 'Edit';
-      btn.open = isOpen;
-    };
-    updateButton();
-    blockStateUnsubscribes.push(FluxBlockState_1.blockState.subscribe(event => {
-      if (event.owner === owner) updateButton();
-    }));
-    FluxHoverController_1.hoverController.register({
-      layer: 'block',
-      target: ownerEl,
-      overlay: btn,
-      show: () => {
-        btn.visible = true;
-      },
-      hide: () => {
-        btn.visible = false;
-      }
-    });
-    btn.addEventListener('flux-click', () => {
-      // In preview mode the CMS form isn't visible, so navigating to the
-      // record's edit link would leave the user stranded. Stage the block
-      // instead — the action toolbar / upload / link overlays still work
-      // against it, and the user can close out with Esc / click-outside.
-      const mode = window.FluxMode ?? 'split';
-      const shouldStage = isInlineEditable || mode === 'preview';
-      if (shouldStage) {
-        FluxBlockState_1.blockState.toggle(owner);
-        updateButton();
-      }
-      logger_1.logger.log(`Block button click → owner: "${owner}", inline: ${isInlineEditable}, mode: ${mode}, open: ${FluxBlockState_1.blockState.isOpen(owner)}`);
-      channel.postMessage({
-        type: 'editBlockClick',
-        owner,
-        editLink,
-        inlineEditable: isInlineEditable
-      });
-    }, {
-      signal
-    });
-    ownerEl.appendChild(btn);
-  });
-}
-
-/***/ }),
-
-/***/ "./client/preview/flux-edit-btn.shadow.css":
-/*!*************************************************!*\
-  !*** ./client/preview/flux-edit-btn.shadow.css ***!
-  \*************************************************/
-/***/ (function(module) {
-
-"use strict";
-module.exports = ":host {\n    position: absolute;\n    top: 0;\n    right: 0;\n    z-index: 9999;\n    display: block;\n}\n\nbutton {\n    padding: 0.4rem 1rem;\n    font-size: 1.1rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.03em;\n    line-height: 1.4;\n    color: #fff;\n    background: var(--flux-color-edit, #1A4877);\n    border: none;\n    border-radius: 0 0 0 0.4rem;\n    cursor: pointer;\n    white-space: nowrap;\n    opacity: 0;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) button {\n    opacity: 1;\n}\n\nbutton:hover {\n    filter: brightness(1.2);\n}\n";
-
-/***/ }),
-
-/***/ "./client/preview/flux-grid-toolbar.shadow.css":
-/*!*****************************************************!*\
-  !*** ./client/preview/flux-grid-toolbar.shadow.css ***!
-  \*****************************************************/
-/***/ (function(module) {
-
-"use strict";
-module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 0.5rem;\n    padding: 0.5rem;\n    border-radius: 0.8rem;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    display: flex;\n    align-items: center;\n    gap: 0.5rem;\n    padding: 0.5rem 1.1rem;\n    font-size: 1.3rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.02em;\n    color: #fff;\n    border: none;\n    border-radius: 2rem;\n    cursor: pointer;\n    white-space: nowrap;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.25);\n}\n\nbutton[data-action=\"edit\"]    { background: var(--flux-color-edit,    #1A4877); }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete,  #CB3E00); }\nbutton[data-action=\"archive\"] { background: var(--flux-color-archive, #b7680a); }\n";
-
-/***/ }),
-
-/***/ "./client/preview/flux-link-dot.shadow.css":
-/*!*************************************************!*\
-  !*** ./client/preview/flux-link-dot.shadow.css ***!
-  \*************************************************/
-/***/ (function(module) {
-
-"use strict";
-module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    width: 2rem;\n    height: 2rem;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    background: var(--flux-color-edit, #1A4877);\n    border: 0.2rem solid rgba(255, 255, 255, 0.9);\n    border-radius: 50%;\n    box-sizing: border-box;\n    cursor: pointer;\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s, background 0.1s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\n:host(:hover) {\n    filter: brightness(1.2);\n}\n";
-
-/***/ }),
-
-/***/ "./client/preview/flux-upload-toolbar.shadow.css":
-/*!*******************************************************!*\
-  !*** ./client/preview/flux-upload-toolbar.shadow.css ***!
-  \*******************************************************/
-/***/ (function(module) {
-
-"use strict";
-module.exports = ":host {\n    position: fixed;\n    z-index: 9999;\n    display: flex;\n    gap: 0.5rem;\n    padding: 0.5rem;\n    border-radius: 0.8rem;\n    transform: translateX(-100%);\n    opacity: 0;\n    pointer-events: none;\n    transition: opacity 0.15s;\n}\n\n:host([visible]) {\n    opacity: 1;\n    pointer-events: auto;\n}\n\nbutton {\n    display: flex;\n    align-items: center;\n    gap: 0.5rem;\n    padding: 0.5rem 1.1rem;\n    font-size: 1.3rem;\n    font-family: system-ui, sans-serif;\n    font-weight: 600;\n    letter-spacing: 0.02em;\n    color: #fff;\n    border: none;\n    border-radius: 2rem;\n    cursor: pointer;\n    white-space: nowrap;\n    transition: filter 0.1s;\n}\n\nbutton:hover {\n    filter: brightness(1.25);\n}\n\nbutton[data-action=\"preview\"] { background: var(--flux-color-edit,   #1A4877); }\nbutton[data-action=\"delete\"]  { background: var(--flux-color-delete, #CB3E00); }\n";
-
-/***/ }),
-
-/***/ "./client/preview/overlays/FluxActionToolbar.ts":
-/*!******************************************************!*\
-  !*** ./client/preview/overlays/FluxActionToolbar.ts ***!
-  \******************************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-var __importDefault = this && this.__importDefault || function (mod) {
-  return mod && mod.__esModule ? mod : {
-    "default": mod
-  };
-};
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxActionToolbar = void 0;
-const flux_grid_toolbar_shadow_css_1 = __importDefault(__webpack_require__(/*! ../flux-grid-toolbar.shadow.css */ "./client/preview/flux-grid-toolbar.shadow.css"));
-const FluxOverlayElement_1 = __webpack_require__(/*! ../FluxOverlayElement */ "./client/preview/FluxOverlayElement.ts");
-const shadow_sheet_1 = __webpack_require__(/*! ../shadow-sheet */ "./client/preview/shadow-sheet.ts");
-const styles = (0, shadow_sheet_1.createSheet)(flux_grid_toolbar_shadow_css_1.default);
-/**
- * Field-level affordance for GridField / relation items.
- * Renders the actions (edit / archive / delete) declared on the GridField.
- */
-class FluxActionToolbar extends FluxOverlayElement_1.FluxOverlayElement {
-  constructor() {
-    super(styles);
-  }
-  addAction(action, icon, onClick) {
-    const label = action.charAt(0).toUpperCase() + action.slice(1);
-    const btn = document.createElement("button");
-    btn.setAttribute("data-action", action);
-    btn.innerHTML = `${icon}<span>${label}</span>`;
-    btn.addEventListener("click", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      onClick();
-    });
-    this.shadow.appendChild(btn);
-  }
-  show(rect) {
-    const r = rect ?? this.target?.getBoundingClientRect();
-    if (!r) return;
-    this.style.top = `${r.top + 4}px`;
-    this.style.left = `${r.right - 4}px`;
-    this.setAttribute("visible", "");
-  }
-}
-exports.FluxActionToolbar = FluxActionToolbar;
-
-/***/ }),
-
-/***/ "./client/preview/overlays/FluxEditOpenButton.ts":
-/*!*******************************************************!*\
-  !*** ./client/preview/overlays/FluxEditOpenButton.ts ***!
-  \*******************************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-var __importDefault = this && this.__importDefault || function (mod) {
-  return mod && mod.__esModule ? mod : {
-    "default": mod
-  };
-};
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxEditOpenButton = void 0;
-const flux_edit_btn_shadow_css_1 = __importDefault(__webpack_require__(/*! ../flux-edit-btn.shadow.css */ "./client/preview/flux-edit-btn.shadow.css"));
-const FluxOverlayElement_1 = __webpack_require__(/*! ../FluxOverlayElement */ "./client/preview/FluxOverlayElement.ts");
-const shadow_sheet_1 = __webpack_require__(/*! ../shadow-sheet */ "./client/preview/shadow-sheet.ts");
-const styles = (0, shadow_sheet_1.createSheet)(flux_edit_btn_shadow_css_1.default);
-/**
- * Block-level affordance: the "Edit" / "Open" button that appears at the
- * top-right of a Flux block or relation item.
- *
- * Behaviour matrix (CMS mode × inline-editable) is wired in 6.3. For now
- * this is a thin label/state holder — clicks bubble as `flux-click` and
- * the orchestrator decides what to do.
- */
-class FluxEditOpenButton extends FluxOverlayElement_1.FluxOverlayElement {
-  constructor() {
-    super(styles);
-    this._btn = document.createElement("button");
-    this.shadow.appendChild(this._btn);
-    this._btn.addEventListener("click", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.dispatchEvent(new CustomEvent("flux-click", {
-        bubbles: true,
-        composed: true
-      }));
-    });
-  }
-  set label(val) {
-    this._btn.textContent = val;
-  }
-  get label() {
-    return this._btn.textContent ?? "";
-  }
-  set visible(val) {
-    if (val) this.setAttribute("visible", "");else this.removeAttribute("visible");
-  }
-  set inline(val) {
-    if (val) this.setAttribute("inline", "");else this.removeAttribute("inline");
-  }
-  get inline() {
-    return this.hasAttribute("inline");
-  }
-  set open(val) {
-    if (val) this.setAttribute("open", "");else this.removeAttribute("open");
-  }
-  get open() {
-    return this.hasAttribute("open");
-  }
-  // Anchored inside its target so it positions relative to the block (the
-  // existing CSS uses :host { position: absolute; top: 0; right: 0 }).
-  // The hover controller toggles `visible`; nothing to position.
-  position() {}
-}
-exports.FluxEditOpenButton = FluxEditOpenButton;
-
-/***/ }),
-
-/***/ "./client/preview/overlays/FluxInlineHandle.ts":
-/*!*****************************************************!*\
-  !*** ./client/preview/overlays/FluxInlineHandle.ts ***!
-  \*****************************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxInlineHandle = void 0;
-const FluxOverlayElement_1 = __webpack_require__(/*! ../FluxOverlayElement */ "./client/preview/FluxOverlayElement.ts");
-const shadow_sheet_1 = __webpack_require__(/*! ../shadow-sheet */ "./client/preview/shadow-sheet.ts");
-/**
- * Visual edit affordance for `fx-type="Text"` fields when their block is
- * open. Currently a thin underline + caret cursor styling; the actual
- * contenteditable binding is set on the target element itself by
- * InlineEditor. This overlay exists so the field gets a consistent
- * "I am editable" visual treatment without baking it into every theme.
- *
- * Reserved for use in 6.3+. Not registered yet — kept as a stub so the
- * overlays/ directory presents the full set described in the plan.
- */
-const styles = (0, shadow_sheet_1.createSheet)(`
-:host {
-    position: fixed;
-    z-index: 9998;
-    pointer-events: none;
-    background: var(--flux-color-inline-bar, rgba(26, 72, 119, 0.85));
-    height: 2px;
-    opacity: 0;
-    transition: opacity 0.12s;
-}
-:host([visible]) { opacity: 1; }
-`);
-class FluxInlineHandle extends FluxOverlayElement_1.FluxOverlayElement {
-  constructor() {
-    super(styles);
-  }
-  show(rect) {
-    const r = rect ?? this.target?.getBoundingClientRect();
-    if (!r) return;
-    this.style.top = `${r.bottom}px`;
-    this.style.left = `${r.left}px`;
-    this.style.width = `${r.width}px`;
-    this.setAttribute("visible", "");
-  }
-}
-exports.FluxInlineHandle = FluxInlineHandle;
-
-/***/ }),
-
-/***/ "./client/preview/overlays/FluxLinkOverlay.ts":
-/*!****************************************************!*\
-  !*** ./client/preview/overlays/FluxLinkOverlay.ts ***!
-  \****************************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-var __importDefault = this && this.__importDefault || function (mod) {
-  return mod && mod.__esModule ? mod : {
-    "default": mod
-  };
-};
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxLinkOverlay = void 0;
-const flux_link_dot_shadow_css_1 = __importDefault(__webpack_require__(/*! ../flux-link-dot.shadow.css */ "./client/preview/flux-link-dot.shadow.css"));
-const FluxOverlayElement_1 = __webpack_require__(/*! ../FluxOverlayElement */ "./client/preview/FluxOverlayElement.ts");
-const shadow_sheet_1 = __webpack_require__(/*! ../shadow-sheet */ "./client/preview/shadow-sheet.ts");
-const styles = (0, shadow_sheet_1.createSheet)(flux_link_dot_shadow_css_1.default);
-/**
- * Field-level affordance for LinkField bindings — small edit dot anchored
- * to the right of the linked content. Only active when the containing
- * block is open.
- */
-class FluxLinkOverlay extends FluxOverlayElement_1.FluxOverlayElement {
-  constructor() {
-    super(styles);
-    this.shadow.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="#fff"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm2.92 1.83H5v-.75l9.06-9.06.75.75-8.89 9.06zM20.71 5.63l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83a1 1 0 0 0 0-1.41z"/></svg>`;
-  }
-  show(rect) {
-    const r = rect ?? this.target?.getBoundingClientRect();
-    if (!r) return;
-    this.style.top = `${r.top - 2}px`;
-    this.style.left = `${r.right + 2}px`;
-    this.setAttribute("visible", "");
-  }
-}
-exports.FluxLinkOverlay = FluxLinkOverlay;
-
-/***/ }),
-
-/***/ "./client/preview/overlays/FluxUploadOverlay.ts":
-/*!******************************************************!*\
-  !*** ./client/preview/overlays/FluxUploadOverlay.ts ***!
-  \******************************************************/
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-
-var __importDefault = this && this.__importDefault || function (mod) {
-  return mod && mod.__esModule ? mod : {
-    "default": mod
-  };
-};
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.FluxUploadOverlay = void 0;
-const flux_upload_toolbar_shadow_css_1 = __importDefault(__webpack_require__(/*! ../flux-upload-toolbar.shadow.css */ "./client/preview/flux-upload-toolbar.shadow.css"));
-const FluxOverlayElement_1 = __webpack_require__(/*! ../FluxOverlayElement */ "./client/preview/FluxOverlayElement.ts");
-const shadow_sheet_1 = __webpack_require__(/*! ../shadow-sheet */ "./client/preview/shadow-sheet.ts");
-const styles = (0, shadow_sheet_1.createSheet)(flux_upload_toolbar_shadow_css_1.default);
-const PREVIEW_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`;
-const DELETE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
-/**
- * Field-level affordance for UploadField (image/file) bindings.
- * Preview / Remove. Only active when the containing block is open.
- */
-class FluxUploadOverlay extends FluxOverlayElement_1.FluxOverlayElement {
-  constructor() {
-    super(styles);
-    this._previewBtn = document.createElement("button");
-    this._previewBtn.setAttribute("data-action", "preview");
-    this._previewBtn.innerHTML = `${PREVIEW_ICON}<span>Preview</span>`;
-    this._deleteBtn = document.createElement("button");
-    this._deleteBtn.setAttribute("data-action", "delete");
-    this._deleteBtn.innerHTML = `${DELETE_ICON}<span>Delete</span>`;
-    this.shadow.appendChild(this._previewBtn);
-    this.shadow.appendChild(this._deleteBtn);
-  }
-  onPreview(handler) {
-    this._previewBtn.addEventListener("click", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      handler();
-    });
-  }
-  onDelete(handler) {
-    this._deleteBtn.addEventListener("click", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      handler();
-    });
-  }
-  show(rect) {
-    const r = rect ?? this.target?.getBoundingClientRect();
-    if (!r) return;
-    this.style.top = `${r.top + 4}px`;
-    this.style.left = `${r.right - 4}px`;
-    this.setAttribute("visible", "");
-  }
-}
-exports.FluxUploadOverlay = FluxUploadOverlay;
-
-/***/ }),
-
-/***/ "./client/preview/shadow-sheet.ts":
-/*!****************************************!*\
-  !*** ./client/preview/shadow-sheet.ts ***!
-  \****************************************/
-/***/ (function(__unused_webpack_module, exports) {
-
-"use strict";
-
-
-Object.defineProperty(exports, "__esModule", ({
-  value: true
-}));
-exports.createSheet = createSheet;
-function createSheet(css) {
-  const sheet = new CSSStyleSheet();
-  sheet.replaceSync(css);
-  return sheet;
-}
 
 /***/ }),
 

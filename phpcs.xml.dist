@@ -5,9 +5,27 @@
 	<file>src</file>
 	<file>tests</file>
 
-    <!-- base rules are PSR-12 -->
-    <rule ref="PSR12" >
-        <!-- You may need to use this exclusion if you override some core methods -->
-        <!--<exclude name="PSR1.Methods.CamelCapsMethodName.NotCamelCaps" />-->
+    <!-- silverstripeltd/bespoke-standards: PSR-2 base + tuned Slevomat Coding Standard ruleset, plus the two custom Silverstripe sniffs -->
+    <rule ref="./vendor/silverstripeltd/bespoke-standards/ruleset.xml">
+        <!-- rootNamespaces below assume an "app/src" project layout; this is a vendor module, so override for our own src/tests -->
+        <exclude name="SlevomatCodingStandard.Files.TypeNameMatchesFileName"/>
+    </rule>
+
+    <rule ref="SlevomatCodingStandard.Files.TypeNameMatchesFileName">
+        <properties>
+            <property name="rootNamespaces" type="array">
+                <element key="src" value="Flux"/>
+                <element key="tests/phpunit" value="Flux\Tests"/>
+            </property>
+        </properties>
+    </rule>
+
+    <rule ref="PSR1.Methods.CamelCapsMethodName.NotCamelCaps">
+        <exclude-pattern>src/Core/TemplateProvider.php</exclude-pattern>
+        <exclude-pattern>tests/phpunit/Context/FluxContextResolverTest.php</exclude-pattern>
+    </rule>
+
+    <rule ref="SlevomatCodingStandard.Classes.DisallowConstructorPropertyPromotion">
+        <exclude-pattern>src/Template/*</exclude-pattern>
     </rule>
 </ruleset>

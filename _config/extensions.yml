@@ -8,6 +8,12 @@ SilverStripe\Forms\GridField\GridFieldDetailForm_ItemRequest:
   extensions:
     FluxGridDetailFormExtension: Flux\Extension\FluxGridDetailFormExtension
 
+# Covers every factory-built form, elemental's inline block form included, where
+# updateCMSFields alone misses fields the record adds after parent::getCMSFields().
+SilverStripe\Forms\DefaultFormFactory:
+  extensions:
+    FluxFormFactoryExtension: Flux\Extension\FluxFormFactoryExtension
+
 SilverStripe\ORM\DataObject:
   extensions:
     FluxDataObjectExtension: Flux\Extension\FluxDataObjectExtension

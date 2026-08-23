@@ -2,6 +2,7 @@
 
 namespace Flux\Tests\Extension;
 
+use SilverStripe\AssetAdmin\Forms\UploadField;
 use SilverStripe\Dev\SapphireTest;
 use SilverStripe\Forms\CheckboxField;
 use SilverStripe\Forms\CheckboxSetField;
@@ -13,6 +14,7 @@ use SilverStripe\Forms\TextField;
 
 class FormFieldTest extends SapphireTest
 {
+
     /**
      * Base FormField gets fx-key, fx-bind, fx-type from FormFieldExtension
      */
@@ -115,7 +117,7 @@ class FormFieldTest extends SapphireTest
     }
 
     /**
-     * UploadField requires silverstripe/asset-admin — skip if not installed
+     * UploadField requires silverstripe/asset-admin, so skip if not installed
      */
     public function testUploadFieldFluxAttributes(): void
     {
@@ -123,7 +125,7 @@ class FormFieldTest extends SapphireTest
             $this->markTestSkipped('silverstripe/asset-admin is not installed');
         }
 
-        $field = new \SilverStripe\AssetAdmin\Forms\UploadField('Image');
+        $field = new UploadField('Image');
         $field->applyFluxAttributes('Image', 'Page.Image', 'file');
 
         $this->assertEquals('Image', $field->getAttribute('fx-key'));
@@ -133,4 +135,5 @@ class FormFieldTest extends SapphireTest
         $this->assertEquals("input[type='hidden']", $field->getAttribute('fx-proxy'));
         $this->assertEquals('previousElementSibling', $field->getAttribute('fx-proxy-type'));
     }
+
 }

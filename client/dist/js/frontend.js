@@ -12,17 +12,8 @@
 
 /**
  * htmx-lite directive runtime: fx-get, fx-post, fx-trigger, fx-target, fx-swap.
- *
- * Scope is deliberately small — no SSE, no out-of-band swaps, no extended
- * trigger syntax. A point of unification rather than a feature surface.
- *
- *   <button fx-get="/partial" fx-target="#out" fx-swap="innerHTML">Reload</button>
- *
- * Default trigger:
- *   - <a>, <button>          → click
- *   - <input>, <select>      → change
- *   - <form>                 → submit
- *   - anything else          → load (fires once on init)
+ * Scope is deliberately small — no SSE, no out-of-band swaps, no extended trigger syntax.
+ * Default triggers: click for links/buttons, change for inputs, submit for forms, load for others (once on init).
  */
 Object.defineProperty(exports, "__esModule", ({
   value: true
@@ -45,6 +36,34 @@ function parseSwap(value) {
   }
   return "innerHTML";
 }
+const VALUED_TAGS = ["INPUT", "SELECT", "TEXTAREA"];
+const DEBOUNCED_TRIGGERS = ["input", "keyup", "keydown", "keypress", "search", "change"];
+const DEFAULT_DEBOUNCE_MS = 500;
+function debounceFor(el, trigger) {
+  const attr = el.getAttribute("fx-debounce");
+  if (attr === null) {
+    return DEBOUNCED_TRIGGERS.includes(trigger) ? DEFAULT_DEBOUNCE_MS : 0;
+  }
+  const parsed = Number.parseInt(attr, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    logger_1.logger.warn(`fx-debounce: "${attr}" is not a positive number, using ${DEFAULT_DEBOUNCE_MS}ms`, el);
+    return DEFAULT_DEBOUNCE_MS;
+  }
+  return parsed;
+}
+function appendValueParam(el, url) {
+  if (!VALUED_TAGS.includes(el.tagName)) return url;
+  const valued = el;
+  const name = el.getAttribute("fx-param") || valued.name || "q";
+  try {
+    const target = new URL(url, window.location.href);
+    target.searchParams.set(name, valued.value ?? "");
+    return target.toString();
+  } catch (error) {
+    logger_1.logger.warn(`fx-get: could not add "${name}" to ${url}:`, error);
+    return url;
+  }
+}
 function resolveTarget(el, targetSelector) {
   if (!targetSelector || targetSelector === "this") return el;
   return document.querySelector(targetSelector);
@@ -60,7 +79,11 @@ function performSwap(target, html, strategy) {
   }
   target.insertAdjacentHTML(strategy, html);
 }
-async function fire(el, method, url) {
+async function fire(el, method, requestUrl) {
+  let url = requestUrl;
+  if (method === "GET") {
+    url = appendValueParam(el, requestUrl);
+  }
   const target = resolveTarget(el, el.getAttribute("fx-target"));
   if (!target) {
     logger_1.logger.warn(`fx-${method.toLowerCase()}: target not found for`, el);
@@ -99,11 +122,18 @@ function bind(el) {
     void fire(el, method, url);
     return;
   }
+  const wait = debounceFor(el, trigger);
+  let timer;
   el.addEventListener(trigger, event => {
     if (trigger === "submit" || trigger === "click") {
       event.preventDefault();
     }
-    void fire(el, method, url);
+    if (wait === 0) {
+      void fire(el, method, url);
+      return;
+    }
+    clearTimeout(timer);
+    timer = setTimeout(() => void fire(el, method, url), wait);
   });
 }
 function applyFxDirectives(root = document) {
@@ -189,11 +219,8 @@ var exports = __webpack_exports__;
 
 
 /**
- * Public frontend bundle entry point (see webpack.config.js → `frontend`).
- * Loaded on every rendered page via FluxExtension.
- *
- * Boots the htmx-lite fx- directive runtime so consumers can use
- * fx-get / fx-post / fx-trigger / fx-target / fx-swap on any frontend page.
+ * Public frontend bundle entry point (webpack `frontend`), loaded on every rendered page.
+ * Boots the fx- directive runtime.
  */
 Object.defineProperty(exports, "__esModule", ({
   value: true
