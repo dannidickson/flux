@@ -1,0 +1,23 @@
+---
+Name: flux-page-extension
+After: '#coreconfig'
+Only:
+  classexists: 'PageController'
+---
+
+# Auto-applies FluxExtension to PageController so live editing works out of the box
+# You can disable this by updating the extension
+#
+#   ---
+#   Name: myproject-disable-flux-page-extension
+#   After: '#flux-page-extension'
+#   ---
+#   PageController:
+#     extensions:
+#       FluxExtension: null
+#
+# Can also disable it at the configuration level
+# Flux\Core\Configuration.enable_auto_set_fields to false.
+PageController:
+  extensions:
+    FluxExtension: Flux\Extension\FluxExtension

@@ -8,10 +8,13 @@ namespace Flux\Extension\Forms;
  */
 class CheckboxSetFieldExtension extends FormFieldExtension
 {
+
     public function applyFluxAttributes(string $key, string $value, ?string $fluxType): void
     {
-        $this->getOwner()->setAttribute("fx-event", "change");
-        $this->getOwner()->setAttribute("fx-collect", "input[type='checkbox']:checked");
+        $this->getOwner()->setAttribute('fx-event', 'change');
+        $this->getOwner()->setAttribute('fx-collect', "input[type='checkbox']:checked");
+
         parent::applyFluxAttributes($key, $value, $fluxType);
     }
+
 }

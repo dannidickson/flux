@@ -2,44 +2,65 @@
 
 namespace Flux\Context;
 
-/**
- * Immutable snapshot of "what is being edited right now".
- *
- * Produced by FluxContextResolver. Consumed by:
- *  - FluxLeftAndMainExtension (inline bootstrap + PJAX fragment)
- *  - FluxApiController::context (preview frame fetches this)
- */
-final class FluxContext implements \JsonSerializable
-{
-    public const SCOPE_PAGE = 'page';
-    public const SCOPE_BLOCK = 'block';
-    public const SCOPE_RELATION_ITEM = 'relation-item';
+use JsonSerializable;
 
-    /** @var array<string, array<string, array>> */
+/**
+ * Snapshot of what is edited / being edited. FluxContextResolver builds the context
+ * and sent to the client via the 'FluxApiController::context' endpoint
+ */
+final class FluxContext implements JsonSerializable
+{
+
+    public const string SCOPE_PAGE = 'page';
+    public const string SCOPE_BLOCK = 'block';
+    public const string SCOPE_RELATION_ITEM = 'relation-item';
+
     private array $extraRelationFields = [];
 
+    public readonly string $scopeKind;
+
+    public readonly ?string $scopeOwnerId;
+
+    /** @var array<int, array{Type:string, ClassName:string, ID:string|int, owner?:string}> */
+    public readonly array $segments;
+
+    /** @var array<string, array{Fields:array, RelationFields:array}> */
+    public readonly array $schema;
+
+    public readonly ?int $pageId;
+
+    public readonly ?string $pageClass;
+
+    /**
+     * @param array<int, array{Type:string, ClassName:string, ID:string|int, owner?:string}> $segments
+     * @param array<string, array{Fields:array, RelationFields:array}> $schema
+     */
     public function __construct(
-        public readonly string $scopeKind,
-        public readonly ?string $scopeOwnerId,
-        /** @var array<int, array{Type:string, ClassName:string, ID:string|int, owner?:string}> */
-        public readonly array $segments,
-        /** @var array<string, array{Fields:array, RelationFields:array}> */
-        public readonly array $schema,
-        public readonly ?int $pageId = null,
-        public readonly ?string $pageClass = null,
+        string $scopeKind,
+        ?string $scopeOwnerId,
+        array $segments,
+        array $schema,
+        ?int $pageId = null,
+        ?string $pageClass = null,
     ) {
+        $this->scopeKind = $scopeKind;
+        $this->scopeOwnerId = $scopeOwnerId;
+        $this->segments = $segments;
+        $this->schema = $schema;
+        $this->pageId = $pageId;
+        $this->pageClass = $pageClass;
     }
 
     /**
-     * Allow extensions (e.g. UserForms) to contribute dynamic relation field
-     * definitions that can't be expressed in the static YAML schema. Merged
-     * over the schema's RelationFields when serialized.
+     * Adds relations for fields that are not defined in YAML.
+     * Typically merged over by the schema's RelationFields
      */
     public function addRelationField(string $className, string $relationName, array $config): void
     {
         if (!isset($this->extraRelationFields[$className])) {
             $this->extraRelationFields[$className] = [];
         }
+
         $this->extraRelationFields[$className][$relationName] = $config;
     }
 
@@ -50,14 +71,12 @@ final class FluxContext implements \JsonSerializable
 
     public function hasContent(): bool
     {
-        return !empty($this->segments);
+        return $this->segments !== [];
     }
 
     /**
-     * Distil this context into the smallest set of params the preview frame
-     * needs to call `/flux/context` and get the same answer back. The CMS
-     * host ships this hint to the frame so both sides converge on the same
-     * scope without the frame having to guess.
+     * Provides a simple hint for the iframe to know what the scope and id of the thing
+     * its editing is. Used during the bootstrapping state
      *
      * @return array{class:string,id:int,itemID?:int,relation?:string}|null
      */
@@ -73,11 +92,14 @@ final class FluxContext implements \JsonSerializable
             if ($this->scopeKind === self::SCOPE_BLOCK && ($segment['Type'] ?? null) === 'Element') {
                 $hint['itemID'] = (int) $segment['ID'];
                 $hint['relation'] = 'ElementalArea';
+
                 return $hint;
             }
+
             if (($segment['Type'] ?? null) === 'RelationItem') {
                 $hint['itemID'] = (int) $segment['ID'];
                 $hint['relation'] = $segment['relation'] ?? null;
+
                 return $hint;
             }
         }
@@ -91,12 +113,25 @@ final class FluxContext implements \JsonSerializable
 
         foreach ($this->extraRelationFields as $className => $relations) {
             if (!isset($schema[$className])) {
-                $schema[$className] = ['Fields' => [], 'RelationFields' => []];
+                $schema[$className] = [
+                    'Fields' => [],
+                    'RelationFields' => [],
+                ];
             }
+
             $schema[$className]['RelationFields'] = array_merge(
                 $schema[$className]['RelationFields'] ?? [],
                 $relations,
             );
+        }
+
+        $page = null;
+
+        if ($this->pageId !== null) {
+            $page = [
+                'id' => $this->pageId,
+                'class' => $this->pageClass,
+            ];
         }
 
         return [
@@ -104,12 +139,10 @@ final class FluxContext implements \JsonSerializable
                 'kind' => $this->scopeKind,
                 'ownerId' => $this->scopeOwnerId,
             ],
-            'page' => $this->pageId === null ? null : [
-                'id' => $this->pageId,
-                'class' => $this->pageClass,
-            ],
+            'page' => $page,
             'segments' => $this->segments,
             'schema' => $schema,
         ];
     }
+
 }

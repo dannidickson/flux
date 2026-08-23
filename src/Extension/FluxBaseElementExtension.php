@@ -2,25 +2,25 @@
 
 namespace Flux\Extension;
 
+use DNADesign\Elemental\Models\BaseElement;
 use SilverStripe\Core\Extension;
 use SilverStripe\ORM\DataObject;
-use DNADesign\Elemental\Models\BaseElement;
-use SilverStripe\Dev\Debug;
 
 /**
- * Flux extension for BaseElement
- *
- * Enables live-editing for Elemental blocks in the CMS admin interface
- * This extends BaseElement DataObjects to add FluxConfig when edited in admin
+ * Gives Elemental blocks an owner token, so live edits target the block's region
+ * rather than the page.
  *
  * @extends Extension<DataObject>
  */
 class FluxBaseElementExtension extends Extension
 {
+
     public function getOwnerTarget(): string
     {
-        /* @var BaseElement */
-        return sprintf('#%s', $this->getOwner()->getAnchor());
+        /** @var BaseElement $owner */
+        $owner = $this->getOwner();
+
+        return sprintf('#%s', $owner->getAnchor());
     }
 
 }

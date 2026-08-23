@@ -10,76 +10,72 @@ use SilverStripe\ORM\DataObject;
 use Symbiote\GridFieldExtensions\GridFieldOrderableRows;
 
 /**
- * Single source of truth for "what is being edited right now".
- *
- * Three entry points:
- *  - forLeftAndMain(): used by FluxLeftAndMainExtension to build the bootstrap.
- *  - forRecord(): used by the /flux/context endpoint after looking up the record
- *    that the preview iframe says it is rendering.
- *  - empty(): explicit zero state.
+ * Figures out what the current editing thing is. What the record and scope should be.
+ * Called from the LeftAndMain extension, as well as the `flux/context` api endpoint
  */
 class FluxContextResolver
 {
-    public function __construct(private FluxSchema $schema = new FluxSchema())
+
+    private FluxSchema $schema;
+
+    public function __construct(?FluxSchema $schema = null)
     {
+        $this->schema = $schema ?? new FluxSchema();
     }
 
     public function forLeftAndMain(LeftAndMain $admin): FluxContext
     {
         $record = $admin->currentRecord();
+
         if (!$record || !$record->exists()) {
             return FluxContext::empty();
         }
+
         return $this->forRecord($record);
     }
 
     /**
-     * Build a context for an item being edited inside a GridFieldDetailForm.
-     * The caller (FluxGridDetailFormExtension) already has the item, the
-     * parent record, and the relation name from its own framework hook —
-     * we don't need to dig them out of the URL.
+     * Build context for an item in a GridFieldDetailForm (caller has item, parent, relationName).
      */
     public function forGridFieldItem(DataObject $item, DataObject $parent, string $relationName): FluxContext
     {
-        // Elemental block edit — share the page-aware block context so the
-        // frame sees the element with its owner anchor (#e{id}).
         if ($parent->hasMethod('ElementalArea') && $relationName === 'ElementalArea') {
             return $this->getBlockContext($item, $parent);
         }
+
         return $this->getRelationItemInPageContext($item, $parent, $relationName);
     }
 
     public function forRecord(DataObject $record, ?int $itemID = null): FluxContext
     {
-        // Editing a specific block within a page's ElementalArea.
         if ($itemID && $record->hasMethod('ElementalArea')) {
             $element = $record->ElementalArea()->Items()->byID($itemID);
+
             if ($element instanceof DataObject && $element->exists()) {
                 return $this->getBlockContext($element, $record);
             }
         }
 
-        // Top-level page edit — anything renderable in the CMS preview frame.
         if ($record instanceof CMSPreviewable || $record->hasExtension(CMSPreviewable::class)) {
             return $this->getPageContext($record);
         }
 
-        // Any other DataObject — ModelAdmin row, GridField detail form, etc.
         return $this->getRelationItemContext($record);
     }
 
     /**
-     * Relation item being edited inside a GridField on a parent page.
-     * The preview frame is showing the parent page's render, so the item's
-     * own row inside that render is the "stage" we want to open.
+     * Item row context on a page
      */
-    private function getRelationItemInPageContext(DataObject $item, DataObject $parent, string $relationName): FluxContext
-    {
+    private function getRelationItemInPageContext(
+        DataObject $item,
+        DataObject $parent,
+        string $relationName,
+    ): FluxContext {
         $segments = [
             $this->pageSegment($parent),
             [
                 'Type' => 'RelationItem',
-                'ClassName' => get_class($item),
+                'ClassName' => $item::class,
                 'ID' => (string) $item->ID,
                 'owner' => (string) $item->ID,
                 'editLink' => $this->editLinkFor($item),
@@ -87,7 +83,7 @@ class FluxContextResolver
             ],
         ];
 
-        $schema = $this->schema->forClasses([get_class($parent), get_class($item)]);
+        $schema = $this->schema->forClasses([$parent::class, $item::class]);
         $this->addRelationsFromGridFields($parent, $schema);
 
         $context = new FluxContext(
@@ -96,25 +92,27 @@ class FluxContextResolver
             segments: $segments,
             schema: $schema,
             pageId: (int) $parent->ID,
-            pageClass: get_class($parent),
+            pageClass: $parent::class,
         );
 
         $parent->extend('updateFluxContext', $context);
+
         return $context;
     }
 
     private function getPageContext(DataObject $page): FluxContext
     {
         $segments = [$this->pageSegment($page)];
-        $classes = [get_class($page)];
+        $classes = [$page::class];
 
         foreach ($this->elementsOf($page) as $element) {
             $segments[] = $this->elementSegment($element);
-            $classes[] = get_class($element);
+            $classes[] = $element::class;
         }
 
         $schema = $this->schema->forClasses($classes);
         $this->addRelationsFromGridFields($page, $schema);
+        array_push($segments, ...$this->relationItemSegments($page, $schema));
 
         $context = new FluxContext(
             scopeKind: FluxContext::SCOPE_PAGE,
@@ -122,91 +120,121 @@ class FluxContextResolver
             segments: $segments,
             schema: $schema,
             pageId: $page->ID,
-            pageClass: get_class($page),
+            pageClass: $page::class,
         );
 
-        // Extension point for modules that need to contribute dynamic, per-record
-        // relation field definitions (e.g. UserForms field idMaps).
         $page->extend('updateFluxContext', $context);
 
         return $context;
     }
 
     /**
-     * Layer per-record runtime data onto the static relation schema. The
-     * FluxSchema slice only knows the YAML-declared selectors/fields; it can't
-     * know the live row IDs or which CMS actions a GridField exposes. Without
-     * the IDs the preview frame has nothing to map its DOM rows onto, so it
-     * can't tag relation items with fx-owner/fx-key — i.e. live editing of
-     * GridField DataObjects does nothing. We restore that here now that we
-     * have the actual record in hand.
+     * One segment per relation row, keyed on the same bare-id owner token the DOM is stamped
+     * with. Without a matching segment FluxLiveState drops the change silently.
      *
-     * For each relation we attach:
-     *  - `ids`      — the relation's row IDs, in query order (matched against
-     *                 DOM order by the frame's index-based annotator).
-     *  - `actions`  — edit/archive/delete, derived from the GridField's
-     *                 components.
-     *  - `sortField`— for sortable relations, the GridFieldOrderableRows field.
+     * @param array $schema Class schema slice, already carrying relation ids.
+     * @return array<int, array>
+     */
+    private function relationItemSegments(DataObject $record, array $schema): array
+    {
+        $relationNames = array_keys($schema[$record::class]['RelationFields'] ?? []);
+        $segments = [];
+
+        foreach ($relationNames as $relationName) {
+            if (!$record->hasMethod($relationName)) {
+                continue;
+            }
+
+            foreach ($record->$relationName() as $item) {
+                $segments[] = [
+                    'Type' => 'RelationItem',
+                    'ClassName' => $item::class,
+                    'ID' => (string) $item->ID,
+                    'owner' => (string) $item->ID,
+                    'relation' => $relationName,
+                    'editLink' => $this->editLinkFor($item),
+                ];
+            }
+        }
+
+        return $segments;
+    }
+
+    /**
+     * Adds per-record runtime data (row `ids`, GridField `actions`, `sortField`) that the static
+     * schema can't know. Without the live row IDs the frame can't map DOM rows onto records, so
+     * GridField DataObjects aren't editable at all.
      */
     private function addRelationsFromGridFields(DataObject $record, array &$schema): void
     {
-        $className = get_class($record);
+        $className = $record::class;
         $relations = $schema[$className]['RelationFields'] ?? [];
 
-        if (empty($relations) || !$record->hasMethod('getCMSFields')) {
+        if ($relations === [] || !$record->hasMethod('getCMSFields')) {
             return;
         }
 
         // Index the record's GridFields by relation name once.
         $gridFields = [];
-        foreach ($record->getCMSFields()->dataFields() as $field) {
-            if ($field instanceof GridField) {
-                $gridFields[$field->getName()] = $field;
-            }
-        }
 
-        foreach ($relations as $relationName => $relation) {
-            // Relations driven by an explicit idMap (e.g. UserForms fields) carry
-            // their own DOM mapping and don't need positional row IDs.
-            if (!empty($relation['idMap'])) {
+        foreach ($record->getCMSFields()->dataFields() as $field) {
+            if (!$field instanceof GridField) {
                 continue;
             }
 
-            if ($record->hasMethod($relationName)) {
-                $schema[$className]['RelationFields'][$relationName]['ids'] =
-                    array_values($record->$relationName()->column('ID'));
+            $gridFields[$field->getName()] = $field;
+        }
+
+        foreach ($relations as $relationName => $relation) {
+            if (($relation['idMap'] ?? []) !== []) {
+                continue;
             }
 
             $grid = $gridFields[$relationName] ?? null;
+
+            $sortField = null;
+            $orderable = $grid?->getConfig()->getComponentByType(GridFieldOrderableRows::class);
+
+            if ($orderable) {
+                $sortField = $orderable->getSortField();
+
+                if (!$relation['sortable']) {
+                    $schema[$className]['RelationFields'][$relationName]['sortField'] = $sortField;
+                }
+            }
+
+            if ($record->hasMethod($relationName)) {
+                $list = $record->$relationName();
+
+                if ($sortField) {
+                    $list = $list->sort($sortField);
+                }
+
+                $schema[$className]['RelationFields'][$relationName]['ids'] =
+                    array_values($list->column('ID'));
+            }
+
             if (!$grid) {
                 continue;
             }
 
             $schema[$className]['RelationFields'][$relationName]['actions'] =
                 $this->actionsForGridField($grid);
-
-            if (!empty($relation['sortable'])) {
-                $orderable = $grid->getConfig()->getComponentByType(GridFieldOrderableRows::class);
-                if ($orderable) {
-                    $schema[$className]['RelationFields'][$relationName]['sortField'] =
-                        $orderable->getSortField();
-                }
-            }
         }
     }
 
     /**
-     * Derive the available row actions from a GridField's components. Matched
-     * by class-name substring so we don't hard-depend on optional modules
-     * (e.g. the Versioned archive action) that may not be installed.
+     * Provides the actions for a GridField
      *
      * @return array<int, string>
      */
     private function actionsForGridField(GridField $grid): array
     {
         $actions = [];
+
         foreach ($grid->getConfig()->getComponents() as $component) {
-            $componentClass = get_class($component);
+            $componentClass = $component::class;
+
             if (str_contains($componentClass, 'GridFieldEditButton')) {
                 $actions[] = 'edit';
             } elseif (str_contains($componentClass, 'GridFieldArchiveAction')) {
@@ -215,6 +243,7 @@ class FluxContextResolver
                 $actions[] = 'delete';
             }
         }
+
         return $actions;
     }
 
@@ -225,13 +254,14 @@ class FluxContextResolver
             $this->elementSegment($element),
         ];
 
-        $ownerId = $element->hasMethod('getOwnerTarget')
-            ? $element->getOwnerTarget()
-            : '#e' . $element->ID;
+        $ownerId = sprintf('#e%d', $element->ID);
 
-        $schema = $this->schema->forClasses([get_class($page), get_class($element)]);
-        // The block may render its own relations (e.g. a Product carousel);
-        // those rows need live IDs too, not just the page-level relations.
+        if ($element->hasMethod('getOwnerTarget')) {
+            $ownerId = $element->getOwnerTarget();
+        }
+
+        $schema = $this->schema->forClasses([$page::class, $element::class]);
+
         $this->addRelationsFromGridFields($element, $schema);
 
         return new FluxContext(
@@ -240,23 +270,25 @@ class FluxContextResolver
             segments: $segments,
             schema: $schema,
             pageId: (int) $page->ID,
-            pageClass: get_class($page),
+            pageClass: $page::class,
         );
     }
 
     private function getRelationItemContext(DataObject $record): FluxContext
     {
-        $segments = [[
-            'Type' => 'RelationItem',
-            'ClassName' => get_class($record),
-            'ID' => (string) $record->ID,
-        ]];
+        $segments = [
+            [
+                'Type' => 'RelationItem',
+                'ClassName' => $record::class,
+                'ID' => (string) $record->ID,
+            ],
+        ];
 
         return new FluxContext(
             scopeKind: FluxContext::SCOPE_RELATION_ITEM,
             scopeOwnerId: (string) $record->ID,
             segments: $segments,
-            schema: $this->schema->forClasses([get_class($record)]),
+            schema: $this->schema->forClasses([$record::class]),
         );
     }
 
@@ -264,7 +296,7 @@ class FluxContextResolver
     {
         return [
             'Type' => 'Page',
-            'ClassName' => get_class($page),
+            'ClassName' => $page::class,
             'ID' => (string) $page->ID,
             'editLink' => $this->editLinkFor($page),
         ];
@@ -274,7 +306,7 @@ class FluxContextResolver
     {
         $segment = [
             'Type' => 'Element',
-            'ClassName' => get_class($element),
+            'ClassName' => $element::class,
             'ID' => (string) $element->ID,
             'editLink' => $this->editLinkFor($element),
         ];
@@ -287,17 +319,21 @@ class FluxContextResolver
     }
 
     /**
-     * Resolve the CMS edit URL for a record using the standard SS contract.
-     * Records that don't implement CMSEditLink() get null and the frame
-     * falls back to "Edit" (toggle) only.
+     * Records without CMSEditLink() get null, and the frame falls back to toggle-only editing.
      */
     private function editLinkFor(DataObject $record): ?string
     {
-        if (!$record->hasMethod('CMSEditLink')) {
+        if (!$record->hasMethod('getCMSEditLink')) {
             return null;
         }
-        $link = $record->CMSEditLink();
-        return $link ?: null;
+
+        $link = $record->getCMSEditLink();
+
+        if (!$link) {
+            return null;
+        }
+
+        return $link;
     }
 
     /**
@@ -311,4 +347,5 @@ class FluxContextResolver
 
         return $page->ElementalArea()->Elements();
     }
+
 }

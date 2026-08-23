@@ -2,30 +2,23 @@
 
 namespace Flux\Extension;
 
-use Flux\Context\FluxContext;
 use Flux\Context\FluxContextResolver;
 use Flux\Core\Configuration;
 use SilverStripe\Core\Extension;
+use SilverStripe\Forms\Form;
 use SilverStripe\Forms\LiteralField;
 use SilverStripe\Security\Security;
 use SilverStripe\Security\SecurityToken;
 use SilverStripe\View\Requirements;
 
 /**
- * v2: thin shim around FluxContextResolver.
- *
- * Responsibilities:
- *  - Mount host JS.
- *  - Register a `FluxBootstrap` fragment on PjaxResponseNegotiator so any
- *    PJAX response carries a fresh bootstrap payload.
- *  - Inject inline window.FluxBootstrap for the initial full-page load.
- *
- * v1's `setActiveRelation`, GridFieldDetailForm shimming, and middleware
- * body-rewriting are gone — `LeftAndMain::currentRecordID()` already
- * resolves nested GridField items via `CMSMainCurrentRecordID`.
+ * Mounts the host JS and ships a bootstrap payload: inline for a full-page load, as a
+ * form field for PJAX. Nested GridField items need no special handling here:
+ * `LeftAndMain::currentRecordID()` already resolves them via `CMSMainCurrentRecordID`.
  */
 class FluxLeftAndMainExtension extends Extension
 {
+
     public function onBeforeInit(): void
     {
         if (!Security::getCurrentUser()) {
@@ -43,6 +36,7 @@ class FluxLeftAndMainExtension extends Extension
         }
 
         $payload = $this->getBootstrap();
+
         if ($payload === null) {
             return;
         }
@@ -53,23 +47,34 @@ class FluxLeftAndMainExtension extends Extension
         );
     }
 
-    public function updateEditForm(&$form)
+    public function updateEditForm(Form &$form): void
     {
-        $payload = $this->getBootstrap();
-        if ($payload !== null) {
-            $json = htmlspecialchars(json_encode($payload), ENT_NOQUOTES | ENT_HTML5, 'UTF-8');
-            $form->Fields()->push(
-                LiteralField::create(
-                    'FluxBootstrapData',
-                    '<script type="application/json" id="flux-bootstrap-data">' . $json . '</script>',
-                ),
-            );
+        $recordId = $this->getOwner()->currentRecordID();
+        $record = $this->getOwner()->getRecord($recordId);
+
+        if ($record && $record->hasMethod('setFluxFields')) {
+            $record->setFluxFields($form->Fields());
         }
+
+        $payload = $this->getBootstrap();
+
+        if ($payload === null) {
+            return;
+        }
+
+        $json = htmlspecialchars(json_encode($payload), ENT_NOQUOTES | ENT_HTML5, 'UTF-8');
+        $form->Fields()->push(
+            LiteralField::create(
+                'FluxBootstrapData',
+                '<script type="application/json" id="flux-bootstrap-data">' . $json . '</script>',
+            ),
+        );
     }
 
     private function getBootstrap(): ?array
     {
-        $context = (new FluxContextResolver())->forLeftAndMain($this->getOwner());
+        $contextResolver = new FluxContextResolver();
+        $context = $contextResolver->forLeftAndMain($this->getOwner());
 
         if (!$context->hasContent()) {
             return null;
@@ -83,4 +88,5 @@ class FluxLeftAndMainExtension extends Extension
             'inlineEditorEnabled' => (bool) Configuration::config()->get('enable_inline_editor'),
         ];
     }
+
 }

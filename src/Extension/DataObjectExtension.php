@@ -2,8 +2,9 @@
 
 namespace Flux\Extension;
 
+use Flux\Schema\FluxSchema;
+use Flux\Schema\UpdateMode;
 use SilverStripe\Core\Extension;
-use SilverStripe\Dev\Debug;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\FormField;
 
@@ -13,23 +14,24 @@ use SilverStripe\Forms\FormField;
  */
 class FluxDataObjectExtension extends Extension
 {
+
     /**
      * Hook into updateCMSFields to set flux field attributes
      */
-    public function updateCMSFields(FieldList $fields)
+    public function updateCMSFields(FieldList $fields): void
     {
         $this->setFluxFields($fields);
     }
 
     /**
-     * Set flux field attributes on form fields
+     * Set flux field attributes on form fields.
      */
-    public function setFluxFields(FieldList $fields)
+    public function setFluxFields(FieldList $fields): FieldList
     {
         $config = $this->getOwner()->config();
-        $hasOne = $config->get("has_one");
+        $hasOne = $config->get('has_one');
 
-        $fluxFields = $config->get("flux_fields") ?? [];
+        $fluxFields = $config->get('flux_fields') ?? [];
 
         foreach ($fluxFields as $key => $value) {
             $field = $fields->dataFieldByName($key);
@@ -42,7 +44,10 @@ class FluxDataObjectExtension extends Extension
                 continue;
             }
 
-            $this->setFieldAttributes($field, $key, $value);
+            // Entries may be a selector string or a {DOMSelector, UpdateMode} map.
+            [$bind, $updateMode] = FluxSchema::normaliseBind($value);
+
+            $this->setFieldAttributes($field, $key, $bind ?? '', $updateMode);
         }
 
         return $fields;
@@ -55,35 +60,30 @@ class FluxDataObjectExtension extends Extension
         FormField $field,
         string $key,
         string $value,
+        string $updateMode = UpdateMode::TEXT,
     ): FormField {
-
-        // $fluxType = FluxRepository::getFluxDataType($key, $this->getOwner()->config());
-
-        $formFieldType = $field->getInputType();
         $schemaDataType = $field->getSchemaDataType();
-        $componentType = $field->getSchemaComponent();
-
-        $fluxType = null;
-
         $fluxType = $schemaDataType;
+
         if ($schemaDataType === 'Custom') {
-            $fluxType = $componentType;
+            $fluxType = $field->getSchemaComponent();
         }
 
         if (!$fluxType) {
             return $field;
         }
 
-        // Delegate to the FormField extension to apply flux attributes
-        // Each field type is now responsible for its own attribute configuration
+        // Each field type owns its own attribute configuration.
         if ($field->hasMethod('applyFluxAttributes')) {
             $field->applyFluxAttributes($key, $value, $fluxType);
+            $field->setAttribute('fx-event-type', $updateMode);
         }
 
         if ($this->getOwner()->hasMethod('getOwnerTarget')) {
             $ownerTarget = $this->getOwner()->getOwnerTarget();
+
             if ($ownerTarget) {
-                $field->setAttribute("fx-owner", $ownerTarget);
+                $field->setAttribute('fx-owner', $ownerTarget);
             }
         }
 
@@ -102,4 +102,5 @@ class FluxDataObjectExtension extends Extension
     {
         return true;
     }
+
 }

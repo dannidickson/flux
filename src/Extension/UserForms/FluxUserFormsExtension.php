@@ -4,13 +4,13 @@ namespace Flux\Extension\UserForms;
 
 use Flux\Context\FluxContext;
 use Flux\Extension\Forms\FluxGridFieldEditableColumns;
+use SilverStripe\Core\Extension;
+use SilverStripe\Forms\FieldList;
+use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\UserForms\Extension\UserFormFieldEditorExtension;
 use SilverStripe\UserForms\Model\EditableFormField\EditableFieldGroup;
 use SilverStripe\UserForms\Model\EditableFormField\EditableFieldGroupEnd;
 use SilverStripe\UserForms\Model\EditableFormField\EditableFormStep;
-use SilverStripe\Core\Extension;
-use SilverStripe\Forms\FieldList;
-use SilverStripe\Forms\GridField\GridField;
 use Symbiote\GridFieldExtensions\GridFieldEditableColumns;
 
 /**
@@ -18,6 +18,7 @@ use Symbiote\GridFieldExtensions\GridFieldEditableColumns;
  */
 class FluxUserFormsExtension extends Extension
 {
+
     public function updateCMSFields(FieldList $fields): void
     {
         $gridField = $fields->dataFieldByName('Fields');
@@ -42,10 +43,10 @@ class FluxUserFormsExtension extends Extension
         $config->addComponent($fluxColumns);
     }
 
-
     public function updateFluxContext(FluxContext $context): void
     {
         $page = $this->getOwner();
+
         if (!$page->hasExtension(UserFormFieldEditorExtension::class)) {
             return;
         }
@@ -63,17 +64,20 @@ class FluxUserFormsExtension extends Extension
         // UserForms renders <div id="$Name"> via EditableFormField_holder.ss,
         // so the per-field selector is just `#{Name}`.
         $idMap = [];
+
         foreach ($fields as $field) {
-            if ($field->Name) {
-                $idMap[(string) $field->ID] = '#' . $field->Name;
+            if (!$field->Name) {
+                continue;
             }
+
+            $idMap[(string) $field->ID] = '#' . $field->Name;
         }
 
-        if (empty($idMap)) {
+        if ($idMap === []) {
             return;
         }
 
-        $context->addRelationField(get_class($page), 'Fields', [
+        $context->addRelationField($page::class, 'Fields', [
             'selector' => '.userform-fields .field',
             'actions' => ['edit', 'delete'],
             'idMap' => $idMap,
@@ -82,4 +86,5 @@ class FluxUserFormsExtension extends Extension
             ],
         ]);
     }
+
 }

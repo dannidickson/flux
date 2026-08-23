@@ -11,22 +11,42 @@ use SilverStripe\ORM\DataObject;
 
 class FluxContextResolverTest extends SapphireTest
 {
+
+    /**
+     * @inheritDoc
+     */
     protected $usesDatabase = false;
 
     /**
-     * Returns a unique [pageClass, productClass] pair per test, declared as
-     * anonymous classes so they never enter the class manifest (which would
-     * otherwise force a temp DB to spin up).
+     * Set up mock for a test DataObject
      */
     private function stubClasses(): array
     {
         $pageClass = get_class(new class extends DataObject implements CMSPreviewable {
-            public function PreviewLink($action = null): ?string { return '/test/' . $this->ID; }
-            public function getMimeType(): string { return 'text/html'; }
-            public function CMSEditLink(): ?string { return null; }
+
+            /**
+             * @inheritDoc
+             */
+            public function PreviewLink($action = null): ?string
+            {
+                return '/test/' . $this->ID;
+            }
+
+            public function getMimeType(): string
+            {
+                return 'text/html';
+            }
+
+            public function CMSEditLink(): ?string
+            {
+                return null;
+            }
+
         });
 
-        $productClass = get_class(new class extends DataObject {});
+        $productClass = get_class(new class extends DataObject {
+
+        });
 
         Config::modify()->set($pageClass, 'db', ['Title' => 'Varchar', 'Subtitle' => 'Varchar']);
         Config::modify()->set($pageClass, 'flux_fields', [
@@ -112,4 +132,5 @@ class FluxContextResolverTest extends SapphireTest
         $this->assertNotEmpty($json['segments']);
         $this->assertNotEmpty($json['schema']);
     }
+
 }

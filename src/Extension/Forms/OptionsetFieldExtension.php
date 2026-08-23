@@ -8,12 +8,15 @@ namespace Flux\Extension\Forms;
  */
 class OptionsetFieldExtension extends FormFieldExtension
 {
+
     /**
      * Apply flux-specific attributes for optionset/radio fields
      */
     public function applyFluxAttributes(string $key, string $value, ?string $fluxType): void
     {
-        $this->getOwner()->setAttribute("fx-event", "change");
+        $this->getOwner()->setAttribute('fx-event', 'change');
+
         parent::applyFluxAttributes($key, $value, $fluxType);
     }
+
 }

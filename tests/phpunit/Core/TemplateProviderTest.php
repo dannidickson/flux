@@ -7,12 +7,13 @@ use SilverStripe\Dev\SapphireTest;
 
 class TemplateProviderTest extends SapphireTest
 {
+
     /**
      * Test that SetFluxAttributes correctly formats attributes with fx- prefix
      */
-    public function testSetFluxAttributesFormatsCorrectly()
+    public function testSetFluxAttributesFormatsCorrectly(): void
     {
-        $result = FluxTemplateProvider::SetFluxAttributes(
+        $result = FluxTemplateProvider::setFluxAttributes(
             'action:submit',
             'event:click'
         );
@@ -24,10 +25,10 @@ class TemplateProviderTest extends SapphireTest
     /**
      * Test that SetFluxAttributes handles edge cases correctly
      */
-    public function testSetFluxAttributesHandlesEdgeCases()
+    public function testSetFluxAttributesHandlesEdgeCases(): void
     {
         // Test with attributes that already have fx- prefix
-        $result = FluxTemplateProvider::SetFluxAttributes(
+        $result = FluxTemplateProvider::setFluxAttributes(
             'fx-custom:value',
             'action:submit'
         );
@@ -35,7 +36,7 @@ class TemplateProviderTest extends SapphireTest
         $this->assertEquals($expected, $result);
 
         // Test with invalid attributes (no colon) - should be skipped
-        $result = FluxTemplateProvider::SetFluxAttributes(
+        $result = FluxTemplateProvider::setFluxAttributes(
             'invalid',
             'action:submit'
         );
@@ -43,7 +44,8 @@ class TemplateProviderTest extends SapphireTest
         $this->assertEquals($expected, $result);
 
         // Test with empty input
-        $result = FluxTemplateProvider::SetFluxAttributes();
+        $result = FluxTemplateProvider::setFluxAttributes();
         $this->assertEquals('', $result);
     }
+
 }

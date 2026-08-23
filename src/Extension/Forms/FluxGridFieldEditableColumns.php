@@ -2,6 +2,7 @@
 
 namespace Flux\Extension\Forms;
 
+use Flux\Schema\FluxSchema;
 use SilverStripe\Forms\FieldList;
 use SilverStripe\Forms\GridField\GridField;
 use SilverStripe\ORM\DataObjectInterface;
@@ -11,48 +12,42 @@ class FluxGridFieldEditableColumns extends BaseGridFieldEditableColumns
 {
 
     /**
-     * Override getFields to apply flux attributes to editable column fields
-     *
-     * @param GridField $grid
-     * @param DataObjectInterface $record
-     * @return FieldList
+     * Applies flux attributes to the editable column fields.
      */
-    public function getFields(GridField $grid, DataObjectInterface $record)
+    public function getFields(GridField $grid, DataObjectInterface $record): FieldList
     {
         $fields = parent::getFields($grid, $record);
+        $fluxFields = $record->config()->get('flux_fields') ?? [];
 
-        $fluxFields = $record->config()->get('flux_fields');
+        foreach ($fluxFields as $fieldName => $fluxBind) {
+            $field = $fields->dataFieldByName($fieldName);
 
-
-        // Apply flux attributes to configured fields
-        if (!empty($fluxFields)) {
-            foreach ($fluxFields as $fieldName => $fluxBind) {
-                $field = $fields->dataFieldByName($fieldName);
-
-                if ($field && $field->hasMethod('applyFluxAttributes')) {
-                    // Get the field's schema data type for ffx-type
-                    $schemaDataType = $field->getSchemaDataType();
-                    $componentType = $field->getSchemaComponent();
-
-                    $fluxType = $schemaDataType;
-                    if ($schemaDataType === 'Custom') {
-                        $fluxType = $componentType;
-                    }
-
-                    // Owner token must match the resolver's segment owner and the
-                    // DOM stamp: elements use a selector anchor (#e2), other
-                    // records use the bare id.
-                    $ownerId = $record->hasMethod('getOwnerTarget')
-                        ? (string) $record->getOwnerTarget()
-                        : (string) $record->ID;
-
-                    $field->applyFluxAttributes($fieldName, $fluxBind, $fluxType);
-                    $field->setAttribute('fx-owner', $ownerId);
-                    $field->setAttribute('fx-event-type', 'textUpdate');
-                }
+            if (!$field || !$field->hasMethod('applyFluxAttributes')) {
+                continue;
             }
+
+            $schemaDataType = $field->getSchemaDataType();
+            $fluxType = $schemaDataType;
+
+            if ($schemaDataType === 'Custom') {
+                $fluxType = $field->getSchemaComponent();
+            }
+
+            $ownerId = (string) $record->ID;
+
+            if ($record->hasMethod('getOwnerTarget')) {
+                $ownerId = (string) $record->getOwnerTarget();
+            }
+
+            // Entries may be a selector string or a {DOMSelector, UpdateMode} map.
+            [$bind, $updateMode] = FluxSchema::normaliseBind($fluxBind);
+
+            $field->applyFluxAttributes($fieldName, $bind ?? '', $fluxType);
+            $field->setAttribute('fx-owner', $ownerId);
+            $field->setAttribute('fx-event-type', $updateMode);
         }
 
         return $fields;
     }
+
 }

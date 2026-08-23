@@ -9,10 +9,10 @@ class SingleSelectFieldExtension extends FormFieldExtension
     {
         parent::applyFluxAttributes($key, $value, $fluxType);
 
-        $this->getOwner()->setAttribute("fx-event", "change");
-        $this->getOwner()->setAttribute("fx-proxy", "input[type='hidden']");
-        $this->getOwner()->setAttribute("fx-proxy-type", "default");
-        $this->getOwner()->setAttribute("fx-type", 'SingleSelectField');
+        $this->getOwner()->setAttribute('fx-event', 'change');
+        $this->getOwner()->setAttribute('fx-proxy', "input[type='hidden']");
+        $this->getOwner()->setAttribute('fx-proxy-type', 'default');
+        $this->getOwner()->setAttribute('fx-type', 'SingleSelectField');
     }
 
 }
